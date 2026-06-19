@@ -81,6 +81,24 @@ class UserSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
 
 
+class PaperSettings(Base):
+    """Configuration for the paper trading simulator."""
+    __tablename__ = "paper_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    initial_balance: Mapped[float] = mapped_column(Float, default=10_000.0)
+    reset_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class PriceCache(Base):
+    """Most recently seen market price per symbol, populated by the agent runner."""
+    __tablename__ = "price_cache"
+
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    price: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+
 # Kept for migration safety — no longer used by session logic
 class AppSession(Base):
     __tablename__ = "app_session"

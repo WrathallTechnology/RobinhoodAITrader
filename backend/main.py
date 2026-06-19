@@ -19,6 +19,7 @@ from api.llm import router as llm_router
 from api.ws import router as ws_router
 from api.session import router as session_router, require_auth
 from api.users import router as users_router
+from api.paper import router as paper_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ app.include_router(strategies_router,prefix="/api", tags=["strategies"],dependen
 app.include_router(agent_router,     prefix="/api", tags=["agent"],     dependencies=_auth)
 app.include_router(llm_router,       prefix="/api", tags=["llm"],       dependencies=_auth)
 app.include_router(users_router,     prefix="/api/users", tags=["users"], dependencies=_auth)
+app.include_router(paper_router,     prefix="/api/paper", tags=["paper"],  dependencies=_auth)
 
 # WebSocket auth handled inside the handler via query-param token
 app.include_router(ws_router, tags=["websocket"])

@@ -89,6 +89,41 @@ export const adminSetPassword = (user_id: number, new_password: string) =>
     body: JSON.stringify({ new_password }),
   });
 
+// ── Paper trading ─────────────────────────────────────────────────────────────
+
+export interface PaperPosition {
+  symbol: string;
+  quantity: number;
+  avg_cost: number;
+  last_price: number;
+  market_value: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+}
+
+export interface PaperSummary {
+  initial_balance: number;
+  cash: number;
+  positions_value: number;
+  total_value: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  total_pnl_pct: number;
+  trade_count: number;
+  positions: PaperPosition[];
+  reset_at: string;
+}
+
+export const fetchPaperSummary = () => request<PaperSummary>("/paper/summary");
+export const updatePaperBalance = (initial_balance: number) =>
+  request<{ initial_balance: number }>("/paper/settings", {
+    method: "PUT",
+    body: JSON.stringify({ initial_balance }),
+  });
+export const resetPaperPortfolio = () =>
+  request<{ reset_at: string; message: string }>("/paper/reset", { method: "POST" });
+
 // ── Portfolio ─────────────────────────────────────────────────────────────────
 
 export interface Holding {
