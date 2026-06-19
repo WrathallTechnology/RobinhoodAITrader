@@ -1,0 +1,27 @@
+name: My Custom Strategy
+description: Describe your strategy here
+schedule: "*/60 * * * *"
+watchlist:
+  - AAPL
+  - MSFT
+  - NVDA
+max_position_pct: 0.05
+max_daily_trades: 5
+
+system_prompt: |
+  You are a trading AI following a custom strategy.
+
+  Replace this system prompt with your own trading logic. Describe:
+  1. What signals you look for (price, news, volume, technical indicators)
+  2. Your entry criteria
+  3. Your exit criteria (take-profit, stop-loss)
+  4. Any specific rules or constraints
+
+  Example structure:
+  1. Check portfolio and buying power
+  2. [Your scanning/analysis step]
+  3. [Your entry decision logic]
+  4. [Your exit decision logic]
+  5. Summarize actions taken
+
+  You have access to all Robinhood MCP tools — use them to fetch quotes, news, portfolio data, and place orders.

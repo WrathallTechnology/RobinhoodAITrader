@@ -1,0 +1,17 @@
+.env
+backend/data/
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+frontend/dist/
+# backend/static is the built frontend — commit it so friends can run without Node
+# Uncomment the next line only if you want to exclude it:
+# backend/static/
+.DS_Store
+*.egg-info/
