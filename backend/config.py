@@ -23,9 +23,11 @@ class Settings(BaseSettings):
     max_position_pct: float = 0.05   # 5% of portfolio per position
     max_daily_loss_pct: float = 0.02  # halt if daily P&L drops 2%
 
-    # Paths
-    data_dir: Path = Path("/app/data")
-    strategies_dir: Path = Path("/app/strategies")
+    # Paths — default to sibling dirs of this file so non-Docker installs work.
+    # In Docker, /app is the working directory so __file__ resolves to /app/config.py
+    # and these still evaluate to /app/data and /app/strategies.
+    data_dir: Path = Path(__file__).parent / "data"
+    strategies_dir: Path = Path(__file__).parent / "strategies"
 
     @property
     def db_url(self) -> str:
