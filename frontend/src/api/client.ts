@@ -237,6 +237,7 @@ export const runNow = () => request<{ message: string }>("/agent/run-now", { met
 export interface LLMProvider {
   provider: string;
   default_model: string;
+  models: string[];
 }
 
 export interface LLMConfigItem {

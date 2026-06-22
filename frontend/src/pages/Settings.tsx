@@ -71,14 +71,18 @@ function LLMSection() {
 
   const [provider, setProvider] = useState("anthropic");
   const [model, setModel] = useState("");
+  const [customModel, setCustomModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; reply?: string; error?: string } | null>(null);
 
-  const defaultModel = providers.find((p: LLMProvider) => p.provider === provider)?.default_model ?? "";
+  const providerInfo = providers.find((p: LLMProvider) => p.provider === provider);
+  const defaultModel = providerInfo?.default_model ?? "";
+  const availableModels = providerInfo?.models ?? [];
+  const effectiveModel = model === "__custom__" ? customModel : (model || defaultModel);
 
   const addMutation = useMutation({
-    mutationFn: () => createLLMConfig(provider, model || defaultModel, apiKey),
+    mutationFn: () => createLLMConfig(provider, effectiveModel, apiKey),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["llmConfigs"] });
       setApiKey("");
@@ -100,7 +104,7 @@ function LLMSection() {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await testLLM(provider, model || defaultModel, apiKey);
+      const res = await testLLM(provider, effectiveModel, apiKey);
       setTestResult({ success: true, reply: res.reply });
     } catch (err) {
       setTestResult({ success: false, error: String(err) });
@@ -150,7 +154,7 @@ function LLMSection() {
               <label className="block text-xs text-gray-500 mb-1">Provider</label>
               <select
                 value={provider}
-                onChange={(e) => { setProvider(e.target.value); setModel(""); setTestResult(null); }}
+                onChange={(e) => { setProvider(e.target.value); setModel(""); setCustomModel(""); setTestResult(null); }}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand"
               >
                 {providers.map((p: LLMProvider) => (
@@ -160,12 +164,24 @@ function LLMSection() {
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Model</label>
-              <input
-                placeholder={defaultModel || "model name"}
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+              <select
+                value={model || defaultModel}
+                onChange={(e) => { setModel(e.target.value); setTestResult(null); }}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-brand"
-              />
+              >
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+                <option value="__custom__">Custom model name…</option>
+              </select>
+              {model === "__custom__" && (
+                <input
+                  placeholder="Enter model name"
+                  value={customModel}
+                  onChange={(e) => setCustomModel(e.target.value)}
+                  className="w-full mt-1.5 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-brand"
+                />
+              )}
             </div>
           </div>
 

@@ -10,14 +10,46 @@ from models.database import LLMConfig, get_db
 
 router = APIRouter()
 
-PROVIDER_DEFAULTS: dict[str, str] = {
-    "anthropic": "claude-opus-4-8",
-    "openai": "gpt-4o",
-    "google": "gemini-2.0-flash",
-    "groq": "llama-3.3-70b-versatile",
-    "mistral": "mistral-large-latest",
-    "cohere": "command-r-plus",
+PROVIDER_MODELS: dict[str, list[str]] = {
+    "anthropic": [
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ],
+    "openai": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "o3-mini",
+        "o1-mini",
+    ],
+    "google": [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+    ],
+    "groq": [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-70b-versatile",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
+    ],
+    "mistral": [
+        "mistral-large-latest",
+        "mistral-medium-latest",
+        "mistral-small-latest",
+        "open-mixtral-8x22b",
+    ],
+    "cohere": [
+        "command-r-plus",
+        "command-r",
+        "command",
+    ],
 }
+
+PROVIDER_DEFAULTS: dict[str, str] = {p: models[0] for p, models in PROVIDER_MODELS.items()}
 
 # LiteLLM uses different routing prefixes from our display names
 _LITELLM_PREFIX: dict[str, str] = {
@@ -56,8 +88,11 @@ def _serialize(cfg: LLMConfig) -> dict:
 
 @router.get("/llm/providers")
 async def list_providers():
-    """Return supported providers and their default models."""
-    return [{"provider": k, "default_model": v} for k, v in PROVIDER_DEFAULTS.items()]
+    """Return supported providers with their available models and default."""
+    return [
+        {"provider": p, "default_model": PROVIDER_DEFAULTS[p], "models": models}
+        for p, models in PROVIDER_MODELS.items()
+    ]
 
 
 @router.get("/llm/config")
