@@ -50,12 +50,13 @@ async def _get_active_strategy() -> StrategyConfig | None:
 
 async def _get_active_llm() -> tuple[str, str] | None:
     """Return (litellm_model_string, api_key) or None."""
+    from api.llm import _model_string
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True))
         cfg = result.scalar_one_or_none()
         if cfg is None:
             return None
-        model = f"{cfg.provider}/{cfg.model_name}"
+        model = _model_string(cfg.provider, cfg.model_name)
         api_key = decrypt(cfg.api_key_encrypted)
         return model, api_key
 
