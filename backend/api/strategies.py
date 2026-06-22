@@ -70,12 +70,13 @@ async def update_strategy(strategy_id: int, body: StrategyUpdate, db: AsyncSessi
     strategy = result.scalar_one_or_none()
     if strategy is None:
         raise HTTPException(404, "Strategy not found")
-    if strategy.is_builtin:
-        raise HTTPException(403, "Built-in strategies cannot be modified — create a copy instead")
 
     parsed = _parse_yaml(body.yaml_content)
     strategy.yaml_content = body.yaml_content
     strategy.name = parsed.get("name", strategy.name)
+    # Once edited, it's the user's version — no longer a pristine built-in.
+    # The original template still lives on disk and re-seeds if this record is deleted.
+    strategy.is_builtin = False
     await db.commit()
     await db.refresh(strategy)
 
@@ -92,7 +93,7 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     if strategy is None:
         raise HTTPException(404, "Strategy not found")
     if strategy.is_builtin:
-        raise HTTPException(403, "Cannot delete built-in strategies")
+        raise HTTPException(403, "Cannot delete a built-in strategy — edit it first to make it yours, then you can delete it")
     await db.delete(strategy)
     await db.commit()
 
