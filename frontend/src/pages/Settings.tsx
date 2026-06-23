@@ -259,18 +259,47 @@ function LLMSection() {
 // ── Robinhood Auth section ────────────────────────────────────────────────────
 
 function RobinhoodSection() {
+  const qc = useQueryClient();
   const { data: auth } = useQuery({ queryKey: ["robinhoodStatus"], queryFn: fetchRobinhoodStatus, refetchInterval: 30_000 });
   const params = new URLSearchParams(window.location.search);
   const authError = params.get("auth_error");
   const authErrorDesc = params.get("desc");
+
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteUrl, setPasteUrl] = useState("");
+  const [pasteError, setPasteError] = useState<string | null>(null);
+  const [pasteOk, setPasteOk] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handlePaste() {
+    setPasteError(null);
+    setSubmitting(true);
+    try {
+      const res = await fetch("/auth/robinhood/paste", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ callback_url: pasteUrl.trim() }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail || `Error ${res.status}`);
+      }
+      setPasteOk(true);
+      qc.invalidateQueries({ queryKey: ["robinhoodStatus"] });
+    } catch (e: any) {
+      setPasteError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl">
       <div className="px-6 py-5 border-b border-gray-800">
         <h2 className="text-white font-semibold">Robinhood Connection</h2>
         <p className="text-gray-400 text-sm mt-1">
-          Connect your Robinhood account. No developer credentials needed — clicking the button below
-          takes you through Robinhood's own login page (the same flow as <code className="bg-gray-800 px-1 rounded text-xs">claude mcp add</code>).
+          Connect your Robinhood account via Robinhood's official OAuth login.
         </p>
       </div>
       <div className="px-6 py-5 space-y-4">
@@ -286,20 +315,58 @@ function RobinhoodSection() {
             <div>
               <div className="text-sm text-white font-medium">{auth?.authenticated ? "Connected" : "Not connected"}</div>
               {auth?.authenticated && auth.expires_at && (
-                <div className="text-xs text-gray-500">
-                  Token expires: {new Date(auth.expires_at).toLocaleString()}
-                </div>
+                <div className="text-xs text-gray-500">Token expires: {new Date(auth.expires_at).toLocaleString()}</div>
               )}
             </div>
           </div>
           <a
             href="/auth/robinhood/start"
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => { setShowPaste(true); setPasteOk(false); setPasteError(null); setPasteUrl(""); }}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-brand text-black font-semibold text-sm hover:bg-brand-dark"
           >
             <ExternalLink size={14} />
             {auth?.authenticated ? "Re-authenticate" : "Connect Robinhood"}
           </a>
         </div>
+
+        {showPaste && !pasteOk && (
+          <div className="bg-gray-800 rounded-lg p-4 space-y-3 text-sm">
+            <p className="text-gray-300 font-medium">Complete the connection:</p>
+            <ol className="text-gray-400 space-y-1 list-decimal list-inside">
+              <li>Log in to Robinhood in the tab that just opened.</li>
+              <li>After approving, your browser will show a <span className="text-white">"This site can't be reached"</span> error — that's expected.</li>
+              <li>Copy the full URL from your browser's address bar (it starts with <code className="bg-gray-700 px-1 rounded">http://localhost/auth/robinhood/callback?code=...</code>).</li>
+              <li>Paste it below and click <span className="text-white">Complete</span>.</li>
+            </ol>
+            {pasteError && (
+              <div className="bg-red-900/30 border border-red-700 rounded px-3 py-2 text-red-300">{pasteError}</div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={pasteUrl}
+                onChange={e => setPasteUrl(e.target.value)}
+                placeholder="http://localhost/auth/robinhood/callback?code=..."
+                className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-xs focus:outline-none focus:border-brand"
+              />
+              <button
+                onClick={handlePaste}
+                disabled={!pasteUrl.trim() || submitting}
+                className="px-4 py-2 rounded bg-brand text-black font-semibold text-xs hover:bg-brand-dark disabled:opacity-50"
+              >
+                {submitting ? "…" : "Complete"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {pasteOk && (
+          <div className="bg-green-900/30 border border-green-700 rounded-lg px-4 py-3 text-sm text-green-300">
+            Robinhood connected successfully!
+          </div>
+        )}
       </div>
     </div>
   );

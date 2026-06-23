@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +32,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MCP_SERVER_URL = "https://agent.robinhood.com/mcp/trading"
+
+# Robinhood's OAuth server only accepts localhost redirect URIs for dynamic clients.
+# Remote deployments use a manual paste flow (user copies the localhost callback URL
+# from their browser's address bar after login and pastes it into the Settings page).
+_LOCALHOST_CALLBACK = "http://localhost/auth/robinhood/callback"
 
 # In-process cache — populated from DB on first use
 _registered_client: dict | None = None  # {client_id, token_url, auth_url, redirect_uri}
@@ -226,42 +232,38 @@ def _pkce_pair() -> tuple[str, str]:
 async def robinhood_start(current_user: User = Depends(require_auth)):
     """
     Kick off the Robinhood MCP OAuth flow for the logged-in user.
-    Discovers endpoints, registers client if needed, then redirects to Robinhood login.
+    Always uses the localhost redirect URI (the only one Robinhood accepts for
+    dynamic clients). Remote deployments complete via the /paste endpoint.
     """
-    redirect_uri = settings.robinhood_redirect_uri
     try:
         metadata = await _discover_oauth_metadata()
-        reg = await _get_or_register_client(metadata, redirect_uri)
+        reg = await _get_or_register_client(metadata, _LOCALHOST_CALLBACK)
     except Exception as exc:
         logger.exception("OAuth setup failed")
         raise HTTPException(502, f"Could not connect to Robinhood OAuth: {exc}")
 
     verifier, challenge = _pkce_pair()
-    # Encode all PKCE state + user_id into an encrypted token so a server restart
-    # between redirect and callback doesn't invalidate the flow.
     state_payload = json.dumps({
         "user_id": current_user.id,
         "verifier": verifier,
         "client_id": reg["client_id"],
         "token_url": reg["token_url"],
+        "redirect_uri": _LOCALHOST_CALLBACK,
         "expiry": (datetime.utcnow() + timedelta(minutes=10)).isoformat(),
     })
     state = encrypt(state_payload)
 
-    # Use scopes discovered from resource metadata; fall back to 'internal'
-    # which is the only scope Robinhood's MCP server advertises
     scope = " ".join(_resource_scopes) if _resource_scopes else "internal"
-
     params = {
         "client_id": reg["client_id"],
-        "redirect_uri": redirect_uri,
+        "redirect_uri": _LOCALHOST_CALLBACK,
         "response_type": "code",
         "scope": scope,
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
-    logger.info("Auth request scope: %s", scope)
+    logger.info("Auth request scope: %s  redirect_uri: %s", scope, _LOCALHOST_CALLBACK)
     auth_url = f"{reg['auth_url']}?{urlencode(params)}"
     logger.info("Redirecting to OAuth: %s", reg["auth_url"])
     return RedirectResponse(auth_url)
@@ -294,13 +296,65 @@ async def robinhood_callback(
 
     user_id: int = entry["user_id"]
 
+    await _exchange_and_store(code, entry, db)
+    return RedirectResponse("/?auth=success")
+
+
+class PasteCallbackRequest(BaseModel):
+    callback_url: str
+
+
+@router.post("/robinhood/paste")
+async def robinhood_paste(
+    body: PasteCallbackRequest,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Complete the OAuth flow when the automatic localhost callback isn't reachable.
+    The user pastes the full callback URL from their browser's address bar
+    (e.g. http://localhost/auth/robinhood/callback?code=...&state=...).
+    """
+    from urllib.parse import urlparse, parse_qs
+    parsed = urlparse(body.callback_url)
+    params = parse_qs(parsed.query)
+
+    error = params.get("error", [None])[0]
+    if error:
+        desc = params.get("error_description", [""])[0]
+        raise HTTPException(400, f"Robinhood returned an error: {error} — {desc}")
+
+    code = params.get("code", [None])[0]
+    state = params.get("state", [None])[0]
+    if not code or not state:
+        raise HTTPException(400, "URL is missing 'code' or 'state' — make sure you copied the full URL from your browser's address bar")
+
+    try:
+        entry = json.loads(decrypt(state))
+        expiry = datetime.fromisoformat(entry["expiry"])
+        if datetime.utcnow() > expiry:
+            raise ValueError("expired")
+        if entry["user_id"] != current_user.id:
+            raise ValueError("user mismatch")
+    except Exception:
+        raise HTTPException(400, "Invalid or expired OAuth state — start the connection again")
+
+    await _exchange_and_store(code, entry, db)
+    return {"ok": True}
+
+
+async def _exchange_and_store(code: str, entry: dict, db: AsyncSession) -> None:
+    """Exchange auth code for tokens and persist them."""
+    redirect_uri = entry.get("redirect_uri", _LOCALHOST_CALLBACK)
+    user_id: int = entry["user_id"]
+
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             entry["token_url"],
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": settings.robinhood_redirect_uri,
+                "redirect_uri": redirect_uri,
                 "client_id": entry["client_id"],
                 "code_verifier": entry["verifier"],
             },
@@ -336,7 +390,6 @@ async def robinhood_callback(
 
     await db.commit()
     logger.info("Robinhood OAuth token stored for user_id=%d, expires %s", user_id, expires_at)
-    return RedirectResponse("/?auth=success")
 
 
 @router.get("/status")
