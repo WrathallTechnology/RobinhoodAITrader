@@ -39,6 +39,20 @@ export const logout = () =>
 export const fetchSetupRequired = () =>
   fetch("/auth/setup-required").then((r) => r.json() as Promise<{ required: boolean }>);
 
+export const fetchCanRegister = () =>
+  fetch("/auth/can-register").then((r) => r.json() as Promise<{ open: boolean }>);
+
+export const registerUser = (username: string, password: string) =>
+  fetch("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ username, password }),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
+    return r.json();
+  });
+
 export const setupFirstUser = (username: string, password: string) =>
   fetch("/auth/setup", {
     method: "POST",

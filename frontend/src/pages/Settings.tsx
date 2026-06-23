@@ -348,6 +348,20 @@ function UsersSection() {
   const [newIsAdmin, setNewIsAdmin] = useState(false);
   const [addError, setAddError] = useState("");
 
+  const [resetTargetId, setResetTargetId] = useState<number | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetError, setResetError] = useState("");
+  const [resetSuccess, setResetSuccess] = useState(false);
+
+  const resetPwMutation = useMutation({
+    mutationFn: () => adminSetPassword(resetTargetId!, resetPassword),
+    onSuccess: () => {
+      setResetTargetId(null); setResetPassword(""); setResetError("");
+      setResetSuccess(true); setTimeout(() => setResetSuccess(false), 3000);
+    },
+    onError: (e: Error) => setResetError(e.message),
+  });
+
   // Change own password
   const [ownCurrent, setOwnCurrent] = useState("");
   const [ownNew, setOwnNew] = useState("");
@@ -399,22 +413,60 @@ function UsersSection() {
           <h3 className="text-sm font-medium text-gray-400">Accounts</h3>
           <div className="space-y-2">
             {(users as AppUser[]).map((u) => (
-              <div key={u.id} className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-gray-800/50 border border-gray-800">
-                <div>
-                  <span className="text-sm text-white font-medium">{u.username}</span>
-                  {u.is_admin && <span className="ml-2 text-xs text-brand">(admin)</span>}
-                  <div className="text-xs text-gray-500 mt-0.5">
-                    Joined {new Date(u.created_at).toLocaleDateString()}
+              <div key={u.id} className="rounded-lg bg-gray-800/50 border border-gray-800 overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <div>
+                    <span className="text-sm text-white font-medium">{u.username}</span>
+                    {u.is_admin && <span className="ml-2 text-xs text-brand">(admin)</span>}
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      Joined {new Date(u.created_at).toLocaleDateString()}
+                    </div>
                   </div>
+                  {u.id !== me.user_id && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => { setResetTargetId(resetTargetId === u.id ? null : u.id); setResetPassword(""); setResetError(""); }}
+                        className={clsx("p-1", resetTargetId === u.id ? "text-brand" : "text-gray-600 hover:text-brand")}
+                        title="Reset password"
+                      >
+                        <Key size={14} />
+                      </button>
+                      <button
+                        onClick={() => deleteMutation.mutate(u.id)}
+                        className="text-gray-600 hover:text-red-400 p-1"
+                        title="Remove user"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {u.id !== me.user_id && (
-                  <button
-                    onClick={() => deleteMutation.mutate(u.id)}
-                    className="text-gray-600 hover:text-red-400 p-1"
-                    title="Remove user"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                {resetTargetId === u.id && (
+                  <div className="px-4 pb-3 flex gap-2 items-center border-t border-gray-700 pt-3">
+                    <input
+                      type="password"
+                      placeholder="New password (8+ chars)"
+                      value={resetPassword}
+                      onChange={(e) => setResetPassword(e.target.value)}
+                      className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-brand"
+                    />
+                    <button
+                      onClick={() => resetPwMutation.mutate()}
+                      disabled={resetPassword.length < 8 || resetPwMutation.isPending}
+                      className="px-3 py-1.5 rounded-lg bg-brand text-black text-xs font-semibold disabled:opacity-40"
+                    >
+                      {resetPwMutation.isPending ? "Setting…" : "Set"}
+                    </button>
+                    <button
+                      onClick={() => { setResetTargetId(null); setResetError(""); }}
+                      className="px-3 py-1.5 rounded-lg bg-gray-700 text-gray-300 text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                {resetError && resetTargetId === u.id && (
+                  <p className="px-4 pb-2 text-red-400 text-xs">{resetError}</p>
                 )}
               </div>
             ))}
@@ -449,7 +501,8 @@ function UsersSection() {
               />
               Admin (can manage users)
             </label>
-            {addError && <p className="text-red-400 text-xs">{addError}</p>}
+            {resetSuccess && <p className="text-brand text-xs flex items-center gap-1"><CheckCircle size={12} /> Password reset successfully</p>}
+          {addError && <p className="text-red-400 text-xs">{addError}</p>}
             <button
               onClick={() => createMutation.mutate()}
               disabled={!newUsername || !newPassword || createMutation.isPending}

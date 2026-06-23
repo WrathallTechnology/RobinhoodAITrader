@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     # Safety
     trading_enabled: bool = False
 
+    # Allow new users to self-register (default off — enable temporarily so a friend can sign up)
+    registration_open: bool = False
+
     # App
     secret_key: str = "change-me-in-production"
 

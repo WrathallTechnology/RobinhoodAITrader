@@ -6,6 +6,7 @@ All protected routes use the require_auth dependency which returns the current U
 """
 import hashlib
 import hmac
+import logging
 import secrets
 from datetime import datetime, timedelta
 
@@ -13,6 +14,8 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from config import settings
 from models.database import User, UserSession, AsyncSessionLocal, get_db
@@ -45,6 +48,39 @@ def _verify_hash(password: str, stored: str) -> bool:
 
 
 # ── Public: first-run setup ───────────────────────────────────────────────────
+
+@router.get("/can-register")
+async def can_register():
+    """Returns {open: true} when REGISTRATION_OPEN=true in .env."""
+    return {"open": settings.registration_open}
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/register")
+async def register(body: RegisterRequest, response: Response, db: AsyncSession = Depends(get_db)):
+    """Self-registration. Only works when REGISTRATION_OPEN=true."""
+    if not settings.registration_open:
+        raise HTTPException(403, "Registration is not open. Ask an admin to create your account.")
+    if len(body.username) < 2:
+        raise HTTPException(422, "Username must be at least 2 characters")
+    if len(body.password) < 8:
+        raise HTTPException(422, "Password must be at least 8 characters")
+    existing = await db.execute(
+        select(User).where(func.lower(User.username) == body.username.lower())
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(409, f"Username '{body.username}' is already taken")
+    user = User(username=body.username, password_hash=_make_hash(body.password), is_admin=False)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    logger.info("New user registered: %s", user.username)
+    return await _create_session(user, response, db)
+
 
 @router.get("/setup-required")
 async def setup_required(db: AsyncSession = Depends(get_db)):
@@ -84,9 +120,16 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.username == body.username))
+    # Case-insensitive username lookup so "Friend" and "friend" both work
+    result = await db.execute(
+        select(User).where(func.lower(User.username) == body.username.lower())
+    )
     user = result.scalar_one_or_none()
-    if user is None or not _verify_hash(body.password, user.password_hash):
+    if user is None:
+        logger.warning("Login failed: username '%s' not found", body.username)
+        raise HTTPException(401, "Incorrect username or password")
+    if not _verify_hash(body.password, user.password_hash):
+        logger.warning("Login failed: wrong password for user '%s'", user.username)
         raise HTTPException(401, "Incorrect username or password")
     return await _create_session(user, response, db)
 
