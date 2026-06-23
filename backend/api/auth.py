@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from crypto import encrypt, decrypt
-from models.database import OAuthToken, User, get_db
+from models.database import AsyncSessionLocal, OAuthClientReg, OAuthToken, User, get_db
 from api.session import require_auth
 
 router = APIRouter()
@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 MCP_SERVER_URL = "https://agent.robinhood.com/mcp/trading"
 
-# Cached registration so we only register once per process lifetime
-_registered_client: dict | None = None  # {client_id, token_url, auth_url}
+# In-process cache — populated from DB on first use
+_registered_client: dict | None = None  # {client_id, token_url, auth_url, redirect_uri}
 
 # Scopes discovered from the protected resource metadata
 _resource_scopes: list[str] = []
@@ -130,46 +130,80 @@ async def _discover_oauth_metadata() -> dict:
 
 async def _get_or_register_client(metadata: dict, redirect_uri: str) -> dict:
     """
-    Register our app with Robinhood's OAuth server if not already registered.
-    Returns dict with client_id, auth_url, token_url.
+    Register our app with Robinhood's OAuth server, persisting the registration in the DB.
+    If redirect_uri has changed since last registration, re-registers to get a fresh client_id.
     """
     global _registered_client
-    if _registered_client:
+
+    # In-process cache — only valid if redirect_uri matches
+    if _registered_client and _registered_client.get("redirect_uri") == redirect_uri:
         return _registered_client
 
     auth_url = metadata.get("authorization_endpoint", "")
     token_url = metadata.get("token_endpoint", "")
     reg_url = metadata.get("registration_endpoint")
 
-    client_id = "robinhood-ai-trader"  # fallback public client id
+    # Check DB for a persisted registration with matching redirect_uri
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(OAuthClientReg).where(OAuthClientReg.provider == "robinhood")
+        )
+        row = result.scalar_one_or_none()
+        if row and row.redirect_uri == redirect_uri:
+            logger.info("Using persisted client_id %s for redirect_uri %s", row.client_id, redirect_uri)
+            _registered_client = {
+                "client_id": row.client_id,
+                "auth_url": row.auth_url,
+                "token_url": row.token_url,
+                "redirect_uri": row.redirect_uri,
+            }
+            return _registered_client
 
-    if reg_url:
-        logger.info("Registering client at %s", reg_url)
-        async with httpx.AsyncClient(timeout=15) as http:
-            try:
-                resp = await http.post(reg_url, json={
-                    "client_name": "RobinHood AI Trader",
-                    "redirect_uris": [redirect_uri],
-                    "grant_types": ["authorization_code", "refresh_token"],
-                    "response_types": ["code"],
-                    "token_endpoint_auth_method": "none",  # public client, no secret
-                    # no scope — let the server grant its defaults
-                })
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    client_id = data.get("client_id", client_id)
-                    logger.info("Registered as client_id: %s", client_id)
-                else:
-                    logger.warning("Registration returned %d: %s", resp.status_code, resp.text[:200])
-            except Exception as exc:
-                logger.warning("Dynamic registration failed: %s", exc)
-    else:
-        logger.warning("No registration_endpoint in OAuth metadata — using default client_id")
+        # redirect_uri changed (or no record) — register fresh
+        client_id = secrets.token_urlsafe(16)  # unique fallback; overwritten if server assigns one
+        if reg_url:
+            logger.info("Registering new client at %s with redirect_uri=%s", reg_url, redirect_uri)
+            async with httpx.AsyncClient(timeout=15) as http:
+                try:
+                    resp = await http.post(reg_url, json={
+                        "client_name": "RobinHood AI Trader",
+                        "redirect_uris": [redirect_uri],
+                        "grant_types": ["authorization_code", "refresh_token"],
+                        "response_types": ["code"],
+                        "token_endpoint_auth_method": "none",
+                    })
+                    if resp.status_code in (200, 201):
+                        data = resp.json()
+                        client_id = data.get("client_id", client_id)
+                        logger.info("Registered as client_id: %s", client_id)
+                    else:
+                        logger.warning("Registration returned %d: %s", resp.status_code, resp.text[:200])
+                except Exception as exc:
+                    logger.warning("Dynamic registration failed: %s", exc)
+        else:
+            logger.warning("No registration_endpoint in OAuth metadata — using generated client_id")
+
+        # Persist (upsert)
+        if row:
+            row.client_id = client_id
+            row.auth_url = auth_url
+            row.token_url = token_url
+            row.redirect_uri = redirect_uri
+        else:
+            db.add(OAuthClientReg(
+                provider="robinhood",
+                client_id=client_id,
+                auth_url=auth_url,
+                token_url=token_url,
+                redirect_uri=redirect_uri,
+            ))
+        await db.commit()
 
     _registered_client = {
         "client_id": client_id,
         "auth_url": auth_url,
         "token_url": token_url,
+        "redirect_uri": redirect_uri,
     }
     return _registered_client
 

@@ -96,6 +96,18 @@ class PaperSettings(Base):
     reset_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
+class OAuthClientReg(Base):
+    """Persisted dynamic client registration so redirect_uri changes trigger re-registration."""
+    __tablename__ = "oauth_client_reg"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(64), unique=True)
+    client_id: Mapped[str] = mapped_column(String(256))
+    auth_url: Mapped[str] = mapped_column(Text)
+    token_url: Mapped[str] = mapped_column(Text)
+    redirect_uri: Mapped[str] = mapped_column(Text)
+
+
 class PriceCache(Base):
     """Shared market price cache — not user-scoped."""
     __tablename__ = "price_cache"
