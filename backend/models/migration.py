@@ -45,6 +45,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
         ("trade_log",     "user_id INTEGER REFERENCES trader_user(id)"),
         ("agent_run",     "user_id INTEGER REFERENCES trader_user(id)"),
         ("paper_settings","user_id INTEGER REFERENCES trader_user(id)"),
+        ("oauth_token",   "user_id INTEGER REFERENCES trader_user(id)"),
     ]
     for table, col_def in _add_cols:
         tbl = await conn.execute(text(
@@ -60,7 +61,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
             await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_def}"))
 
     # Assign existing orphan rows to the first user
-    _assign = ["trade_log", "agent_run", "llm_config", "paper_settings"]
+    _assign = ["trade_log", "agent_run", "llm_config", "paper_settings", "oauth_token"]
     for table in _assign:
         tbl = await conn.execute(text(
             f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"

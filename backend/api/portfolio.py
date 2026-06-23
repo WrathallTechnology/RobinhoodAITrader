@@ -7,15 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent.mcp_client import robinhood_mcp
 from api.auth import get_robinhood_token
-from models.database import get_db
+from api.session import require_auth
+from models.database import User, get_db
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 @router.get("/portfolio")
-async def get_portfolio(db: AsyncSession = Depends(get_db)):
-    token = await get_robinhood_token(db)
+async def get_portfolio(
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    token = await get_robinhood_token(db, current_user.id)
     try:
         async with robinhood_mcp(token) as (session, _tools):
             result = await session.call_tool("get_portfolio", {})

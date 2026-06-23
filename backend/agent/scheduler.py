@@ -109,14 +109,14 @@ async def _run_scheduled_agent(user_id: int) -> None:
 
     model, api_key = llm
 
+    dry_run = not settings.trading_enabled
     try:
         async with AsyncSessionLocal() as db:
-            oauth_token = await get_robinhood_token(db)
+            oauth_token = await get_robinhood_token(db, user_id)
     except Exception as exc:
         logger.warning("user_id=%d: Robinhood not authenticated: %s — skipping", user_id, exc)
         return
 
-    dry_run = not settings.trading_enabled
     logger.info("Scheduled run — user=%d strategy=%s model=%s dry_run=%s",
                 user_id, strategy.name, model, dry_run)
     await run_agent(strategy.yaml_content, model, api_key, oauth_token, dry_run, user_id=user_id)
@@ -180,7 +180,7 @@ async def trigger_now(user_id: int) -> int:
 
     model, api_key = llm
     async with AsyncSessionLocal() as db:
-        oauth_token = await get_robinhood_token(db)
+        oauth_token = await get_robinhood_token(db, user_id)
 
     dry_run = not settings.trading_enabled
     return await run_agent(strategy.yaml_content, model, api_key, oauth_token, dry_run, user_id=user_id)

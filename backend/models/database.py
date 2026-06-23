@@ -43,9 +43,11 @@ class AgentRun(Base):
 
 class OAuthToken(Base):
     __tablename__ = "oauth_token"
+    __table_args__ = (UniqueConstraint("provider", "user_id", name="uq_oauth_provider_user"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    provider: Mapped[str] = mapped_column(String(64), unique=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("trader_user.id", ondelete="CASCADE"), nullable=True)
+    provider: Mapped[str] = mapped_column(String(64))
     access_token: Mapped[str] = mapped_column(Text)
     refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

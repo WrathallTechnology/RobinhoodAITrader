@@ -24,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from crypto import encrypt, decrypt
-from models.database import OAuthToken, get_db
+from models.database import OAuthToken, User, get_db
+from api.session import require_auth
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -186,9 +187,9 @@ def _pkce_pair() -> tuple[str, str]:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/robinhood/start")
-async def robinhood_start():
+async def robinhood_start(current_user: User = Depends(require_auth)):
     """
-    Kick off the Robinhood MCP OAuth flow.
+    Kick off the Robinhood MCP OAuth flow for the logged-in user.
     Discovers endpoints, registers client if needed, then redirects to Robinhood login.
     """
     redirect_uri = settings.robinhood_redirect_uri
@@ -200,9 +201,10 @@ async def robinhood_start():
         raise HTTPException(502, f"Could not connect to Robinhood OAuth: {exc}")
 
     verifier, challenge = _pkce_pair()
-    # Encode all PKCE state into an encrypted token so a server restart
+    # Encode all PKCE state + user_id into an encrypted token so a server restart
     # between redirect and callback doesn't invalidate the flow.
     state_payload = json.dumps({
+        "user_id": current_user.id,
         "verifier": verifier,
         "client_id": reg["client_id"],
         "token_url": reg["token_url"],
@@ -254,6 +256,8 @@ async def robinhood_callback(
     except Exception:
         raise HTTPException(400, "Invalid or expired OAuth state — please try connecting again")
 
+    user_id: int = entry["user_id"]
+
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             entry["token_url"],
@@ -274,7 +278,9 @@ async def robinhood_callback(
     data = resp.json()
     expires_at = datetime.utcnow() + timedelta(seconds=data.get("expires_in", 86400))
 
-    result = await db.execute(select(OAuthToken).where(OAuthToken.provider == "robinhood"))
+    result = await db.execute(
+        select(OAuthToken).where(OAuthToken.provider == "robinhood", OAuthToken.user_id == user_id)
+    )
     row = result.scalar_one_or_none()
 
     if row:
@@ -284,6 +290,7 @@ async def robinhood_callback(
         row.token_type = data.get("token_type", "Bearer")
     else:
         db.add(OAuthToken(
+            user_id=user_id,
             provider="robinhood",
             access_token=encrypt(data["access_token"]),
             refresh_token=encrypt(data.get("refresh_token", "")),
@@ -292,13 +299,21 @@ async def robinhood_callback(
         ))
 
     await db.commit()
-    logger.info("Robinhood OAuth token stored, expires %s", expires_at)
+    logger.info("Robinhood OAuth token stored for user_id=%d, expires %s", user_id, expires_at)
     return RedirectResponse("/?auth=success")
 
 
 @router.get("/status")
-async def auth_status(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(OAuthToken).where(OAuthToken.provider == "robinhood"))
+async def auth_status(
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(OAuthToken).where(
+            OAuthToken.provider == "robinhood",
+            OAuthToken.user_id == current_user.id,
+        )
+    )
     token = result.scalar_one_or_none()
     if token is None:
         return {"authenticated": False}
@@ -309,9 +324,14 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
     }
 
 
-async def get_robinhood_token(db: AsyncSession) -> str:
-    """Return a valid decrypted Robinhood access token, refreshing if needed."""
-    result = await db.execute(select(OAuthToken).where(OAuthToken.provider == "robinhood"))
+async def get_robinhood_token(db: AsyncSession, user_id: int) -> str:
+    """Return a valid decrypted Robinhood access token for the given user."""
+    result = await db.execute(
+        select(OAuthToken).where(
+            OAuthToken.provider == "robinhood",
+            OAuthToken.user_id == user_id,
+        )
+    )
     token = result.scalar_one_or_none()
     if token is None:
         raise HTTPException(401, "Not authenticated with Robinhood — click 'Connect Robinhood' in Settings")
