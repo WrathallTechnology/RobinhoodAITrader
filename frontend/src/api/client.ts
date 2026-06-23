@@ -42,6 +42,13 @@ export const fetchSetupRequired = () =>
 export const fetchCanRegister = () =>
   fetch("/auth/can-register").then((r) => r.json() as Promise<{ open: boolean }>);
 
+export const fetchRegistrationOpen = () => request<{ open: boolean }>("/users/registration-open");
+export const setRegistrationOpen = (open: boolean) =>
+  request<{ open: boolean }>("/users/registration-open", {
+    method: "POST",
+    body: JSON.stringify({ open }),
+  });
+
 export const registerUser = (username: string, password: string) =>
   fetch("/auth/register", {
     method: "POST",

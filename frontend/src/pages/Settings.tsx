@@ -14,6 +14,8 @@ import {
   deleteUser,
   adminSetPassword,
   changeOwnPassword,
+  fetchRegistrationOpen,
+  setRegistrationOpen,
   type LLMConfigItem,
   type LLMProvider,
   type AppUser,
@@ -342,6 +344,12 @@ function UsersSection() {
   const qc = useQueryClient();
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: fetchMe, staleTime: Infinity, retry: false });
   const { data: users = [] } = useQuery({ queryKey: ["users"], queryFn: fetchUsers, enabled: !!me?.is_admin });
+  const { data: regStatus } = useQuery({ queryKey: ["registrationOpen"], queryFn: fetchRegistrationOpen, enabled: !!me?.is_admin });
+
+  const regToggleMutation = useMutation({
+    mutationFn: (open: boolean) => setRegistrationOpen(open),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["registrationOpen"] }),
+  });
 
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -511,6 +519,35 @@ function UsersSection() {
               {createMutation.isPending ? "Adding…" : "Add user"}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Registration toggle (admin only) */}
+      {me?.is_admin && (
+        <div className="px-6 py-4 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium text-gray-300">Allow self-registration</div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {regStatus?.open
+                ? "Registration is open — anyone can create an account"
+                : "Registration is closed — only admins can add users"}
+            </div>
+          </div>
+          <button
+            onClick={() => regToggleMutation.mutate(!regStatus?.open)}
+            disabled={regToggleMutation.isPending}
+            className={clsx(
+              "relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-40",
+              regStatus?.open ? "bg-brand" : "bg-gray-700"
+            )}
+          >
+            <span
+              className={clsx(
+                "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                regStatus?.open ? "translate-x-6" : "translate-x-1"
+              )}
+            />
+          </button>
         </div>
       )}
 

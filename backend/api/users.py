@@ -4,8 +4,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from models.database import User, get_db
-from api.session import require_admin, require_auth, _make_hash
+from api.session import require_admin, require_auth, _make_hash, _registration_flag
 
 router = APIRouter()
 
@@ -94,6 +95,30 @@ async def change_own_password(
     current_user.password_hash = _make_hash(body.new_password)
     await db.commit()
     return {"ok": True}
+
+
+class RegistrationToggleRequest(BaseModel):
+    open: bool
+
+
+@router.post("/registration-open")
+async def set_registration_open(
+    body: RegistrationToggleRequest,
+    _: User = Depends(require_admin),
+):
+    """Admin toggle: enable or disable self-registration without a server restart."""
+    flag = _registration_flag()
+    if body.open:
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        flag.touch()
+    else:
+        flag.unlink(missing_ok=True)
+    return {"open": body.open}
+
+
+@router.get("/registration-open")
+async def get_registration_open(_: User = Depends(require_admin)):
+    return {"open": _registration_flag().exists() or settings.registration_open}
 
 
 class AdminSetPasswordRequest(BaseModel):

@@ -9,6 +9,7 @@ import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pydantic import BaseModel
@@ -49,10 +50,14 @@ def _verify_hash(password: str, stored: str) -> bool:
 
 # ── Public: first-run setup ───────────────────────────────────────────────────
 
+def _registration_flag() -> Path:
+    return settings.data_dir / "registration_open"
+
+
 @router.get("/can-register")
 async def can_register():
-    """Returns {open: true} when REGISTRATION_OPEN=true in .env."""
-    return {"open": settings.registration_open}
+    """Returns {open: true} when an admin has enabled registration (or REGISTRATION_OPEN=true in .env)."""
+    return {"open": _registration_flag().exists() or settings.registration_open}
 
 
 class RegisterRequest(BaseModel):
