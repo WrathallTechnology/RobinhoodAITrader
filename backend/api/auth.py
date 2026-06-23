@@ -31,9 +31,6 @@ logger = logging.getLogger(__name__)
 
 MCP_SERVER_URL = "https://agent.robinhood.com/mcp/trading"
 
-# In-memory PKCE + client state, keyed by OAuth state token
-_pending: dict[str, dict] = {}  # state → {verifier, client_id, token_url, expiry}
-
 # Cached registration so we only register once per process lifetime
 _registered_client: dict | None = None  # {client_id, token_url, auth_url}
 
@@ -203,13 +200,15 @@ async def robinhood_start():
         raise HTTPException(502, f"Could not connect to Robinhood OAuth: {exc}")
 
     verifier, challenge = _pkce_pair()
-    state = secrets.token_urlsafe(32)
-    _pending[state] = {
+    # Encode all PKCE state into an encrypted token so a server restart
+    # between redirect and callback doesn't invalidate the flow.
+    state_payload = json.dumps({
         "verifier": verifier,
         "client_id": reg["client_id"],
         "token_url": reg["token_url"],
-        "expiry": datetime.utcnow() + timedelta(minutes=10),
-    }
+        "expiry": (datetime.utcnow() + timedelta(minutes=10)).isoformat(),
+    })
+    state = encrypt(state_payload)
 
     # Use scopes discovered from resource metadata; fall back to 'internal'
     # which is the only scope Robinhood's MCP server advertises
@@ -242,14 +241,17 @@ async def robinhood_callback(
     # OAuth error response (e.g. invalid_scope, access_denied)
     if error:
         logger.error("Robinhood OAuth error: %s — %s", error, error_description)
-        _pending.pop(state, None)
         return RedirectResponse(f"/settings?auth_error={error}&desc={error_description or ''}")
 
     if not code:
         raise HTTPException(400, "Missing authorization code in callback")
 
-    entry = _pending.pop(state, None)
-    if entry is None or datetime.utcnow() > entry["expiry"]:
+    try:
+        entry = json.loads(decrypt(state))
+        expiry = datetime.fromisoformat(entry["expiry"])
+        if datetime.utcnow() > expiry:
+            raise ValueError("expired")
+    except Exception:
         raise HTTPException(400, "Invalid or expired OAuth state — please try connecting again")
 
     async with httpx.AsyncClient(timeout=30) as client:
