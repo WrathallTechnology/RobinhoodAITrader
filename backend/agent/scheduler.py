@@ -1,4 +1,4 @@
-"""APScheduler setup — loads the active strategy and runs the agent on its cron schedule."""
+"""APScheduler setup — per-user jobs, each running on the user's active strategy + LLM."""
 import logging
 from pathlib import Path
 
@@ -8,13 +8,12 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
 from config import settings
-from models.database import AsyncSessionLocal, LLMConfig, StrategyConfig
+from models.database import AsyncSessionLocal, LLMConfig, StrategyConfig, User
 from crypto import decrypt
 
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="UTC")
-_current_job_id = "trading_agent"
 
 BUILTIN_STRATEGY_FILES = [
     "momentum.yaml",
@@ -24,9 +23,21 @@ BUILTIN_STRATEGY_FILES = [
 ]
 
 
-async def seed_builtin_strategies() -> None:
-    """Load built-in strategy YAMLs into the database on first run."""
+def _job_id(user_id: int) -> str:
+    return f"trading_agent_{user_id}"
+
+
+# ── Built-in strategy seeding ─────────────────────────────────────────────────
+
+async def seed_builtin_strategies_for_user(user_id: int) -> None:
+    """Create built-in strategy copies for a specific user if they have none."""
     async with AsyncSessionLocal() as db:
+        existing = await db.execute(
+            select(StrategyConfig).where(StrategyConfig.user_id == user_id)
+        )
+        if existing.scalars().first() is not None:
+            return  # user already has strategies
+
         for filename in BUILTIN_STRATEGY_FILES:
             path = settings.strategies_dir / filename
             if not path.exists():
@@ -35,44 +46,65 @@ async def seed_builtin_strategies() -> None:
             content = path.read_text()
             parsed = yaml.safe_load(content)
             name = parsed.get("name", filename)
-
-            existing = await db.execute(select(StrategyConfig).where(StrategyConfig.name == name))
-            if existing.scalar_one_or_none() is None:
-                db.add(StrategyConfig(name=name, yaml_content=content, is_builtin=True))
+            db.add(StrategyConfig(
+                user_id=user_id, name=name,
+                yaml_content=content, is_builtin=True,
+            ))
         await db.commit()
+        logger.info("Seeded built-in strategies for user_id=%d", user_id)
 
 
-async def _get_active_strategy() -> StrategyConfig | None:
+async def seed_builtin_strategies() -> None:
+    """Seed built-in strategies for every existing user that has none."""
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(StrategyConfig).where(StrategyConfig.enabled == True))
+        result = await db.execute(select(User))
+        users = result.scalars().all()
+    for user in users:
+        await seed_builtin_strategies_for_user(user.id)
+
+
+# ── Active strategy / LLM lookup ──────────────────────────────────────────────
+
+async def _get_active_strategy(user_id: int) -> StrategyConfig | None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(StrategyConfig).where(
+                StrategyConfig.user_id == user_id,
+                StrategyConfig.enabled == True,
+            )
+        )
         return result.scalar_one_or_none()
 
 
-async def _get_active_llm() -> tuple[str, str] | None:
-    """Return (litellm_model_string, api_key) or None."""
+async def _get_active_llm(user_id: int) -> tuple[str, str] | None:
     from api.llm import _model_string
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True))
+        result = await db.execute(
+            select(LLMConfig).where(
+                LLMConfig.user_id == user_id,
+                LLMConfig.is_active == True,
+            )
+        )
         cfg = result.scalar_one_or_none()
         if cfg is None:
             return None
-        model = _model_string(cfg.provider, cfg.model_name)
-        api_key = decrypt(cfg.api_key_encrypted)
-        return model, api_key
+        return _model_string(cfg.provider, cfg.model_name), decrypt(cfg.api_key_encrypted)
 
 
-async def _run_scheduled_agent() -> None:
+# ── Scheduled job ─────────────────────────────────────────────────────────────
+
+async def _run_scheduled_agent(user_id: int) -> None:
     from api.auth import get_robinhood_token
     from agent.runner import run_agent
 
-    strategy = await _get_active_strategy()
+    strategy = await _get_active_strategy(user_id)
     if strategy is None:
-        logger.info("No active strategy — skipping scheduled run")
+        logger.info("user_id=%d: no active strategy — skipping scheduled run", user_id)
         return
 
-    llm = await _get_active_llm()
+    llm = await _get_active_llm(user_id)
     if llm is None:
-        logger.warning("No active LLM config — skipping scheduled run")
+        logger.warning("user_id=%d: no active LLM — skipping run", user_id)
         return
 
     model, api_key = llm
@@ -81,58 +113,68 @@ async def _run_scheduled_agent() -> None:
         async with AsyncSessionLocal() as db:
             oauth_token = await get_robinhood_token(db)
     except Exception as exc:
-        logger.warning("Robinhood not authenticated: %s — skipping run", exc)
+        logger.warning("user_id=%d: Robinhood not authenticated: %s — skipping", user_id, exc)
         return
 
     dry_run = not settings.trading_enabled
-    logger.info("Scheduled run — strategy=%s model=%s dry_run=%s", strategy.name, model, dry_run)
-    await run_agent(strategy.yaml_content, model, api_key, oauth_token, dry_run)
+    logger.info("Scheduled run — user=%d strategy=%s model=%s dry_run=%s",
+                user_id, strategy.name, model, dry_run)
+    await run_agent(strategy.yaml_content, model, api_key, oauth_token, dry_run, user_id=user_id)
 
 
-async def reschedule(cron: str) -> None:
-    """Update the scheduler job to use a new cron expression."""
+# ── Public scheduler API ──────────────────────────────────────────────────────
+
+async def reschedule(cron: str, user_id: int) -> None:
     try:
         trigger = CronTrigger.from_crontab(cron)
     except ValueError as exc:
         from fastapi import HTTPException
         raise HTTPException(400, f"Invalid cron expression '{cron}': {exc}") from exc
-    if scheduler.get_job(_current_job_id):
-        scheduler.remove_job(_current_job_id)
+
+    job_id = _job_id(user_id)
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
     scheduler.add_job(
         _run_scheduled_agent,
         trigger,
-        id=_current_job_id,
+        args=[user_id],
+        id=job_id,
         replace_existing=True,
         max_instances=1,
         misfire_grace_time=60,
     )
-    logger.info("Scheduler rescheduled: %s", cron)
+    logger.info("Scheduled user_id=%d: %s", user_id, cron)
 
 
 async def start_scheduler() -> None:
-    strategy = await _get_active_strategy()
-    if strategy:
-        parsed = yaml.safe_load(strategy.yaml_content)
+    """Start scheduled jobs for all users that have an enabled strategy."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(StrategyConfig).where(StrategyConfig.enabled == True))
+        active = result.scalars().all()
+    for s in active:
+        if s.user_id is None:
+            continue
+        parsed = yaml.safe_load(s.yaml_content)
         cron = parsed.get("schedule", "*/30 * * * *")
-        await reschedule(cron)
+        await reschedule(cron, s.user_id)
 
 
-async def stop_scheduler() -> None:
-    if scheduler.get_job(_current_job_id):
-        scheduler.remove_job(_current_job_id)
-        logger.info("Scheduler job removed (kill switch)")
+async def stop_scheduler(user_id: int) -> None:
+    job_id = _job_id(user_id)
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+        logger.info("Scheduler job removed for user_id=%d", user_id)
 
 
-async def trigger_now() -> int:
-    """Trigger an immediate agent run outside the schedule. Returns run_id."""
+async def trigger_now(user_id: int) -> int:
     from api.auth import get_robinhood_token
     from agent.runner import run_agent
 
-    strategy = await _get_active_strategy()
+    strategy = await _get_active_strategy(user_id)
     if strategy is None:
         raise ValueError("No active strategy configured")
 
-    llm = await _get_active_llm()
+    llm = await _get_active_llm(user_id)
     if llm is None:
         raise ValueError("No active LLM configured — add one in Settings")
 
@@ -141,4 +183,4 @@ async def trigger_now() -> int:
         oauth_token = await get_robinhood_token(db)
 
     dry_run = not settings.trading_enabled
-    return await run_agent(strategy.yaml_content, model, api_key, oauth_token, dry_run)
+    return await run_agent(strategy.yaml_content, model, api_key, oauth_token, dry_run, user_id=user_id)

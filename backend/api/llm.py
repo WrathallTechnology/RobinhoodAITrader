@@ -6,7 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from crypto import encrypt, decrypt
-from models.database import LLMConfig, get_db
+from models.database import LLMConfig, User, get_db
+from api.session import require_auth
 
 router = APIRouter()
 
@@ -97,14 +98,22 @@ async def list_providers():
 
 
 @router.get("/llm/config")
-async def get_llm_configs(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig))
+async def get_llm_configs(
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(LLMConfig).where(LLMConfig.user_id == current_user.id))
     return [_serialize(c) for c in result.scalars().all()]
 
 
 @router.post("/llm/config", status_code=201)
-async def create_llm_config(body: LLMConfigCreate, db: AsyncSession = Depends(get_db)):
+async def create_llm_config(
+    body: LLMConfigCreate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
     cfg = LLMConfig(
+        user_id=current_user.id,
         provider=body.provider,
         model_name=body.model_name,
         api_key_encrypted=encrypt(body.api_key),
@@ -117,13 +126,19 @@ async def create_llm_config(body: LLMConfigCreate, db: AsyncSession = Depends(ge
 
 
 @router.post("/llm/config/{config_id}/activate")
-async def activate_llm(config_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id))
+async def activate_llm(
+    config_id: int,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.user_id == current_user.id)
+    )
     cfg = result.scalar_one_or_none()
     if cfg is None:
         raise HTTPException(404, "LLM config not found")
 
-    all_result = await db.execute(select(LLMConfig))
+    all_result = await db.execute(select(LLMConfig).where(LLMConfig.user_id == current_user.id))
     for c in all_result.scalars().all():
         c.is_active = False
     cfg.is_active = True
@@ -132,8 +147,14 @@ async def activate_llm(config_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/llm/config/{config_id}", status_code=204)
-async def delete_llm_config(config_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id))
+async def delete_llm_config(
+    config_id: int,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.user_id == current_user.id)
+    )
     cfg = result.scalar_one_or_none()
     if cfg is None:
         raise HTTPException(404, "LLM config not found")

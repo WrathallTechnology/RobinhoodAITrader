@@ -1,4 +1,4 @@
-"""Paper trading portfolio — computed from dry-run trade history."""
+"""Paper trading portfolio — computed from the current user's dry-run trade history."""
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import TradeLog, PaperSettings, PriceCache, get_db
+from models.database import TradeLog, PaperSettings, PriceCache, User, get_db
 from api.session import require_auth
 
 router = APIRouter()
@@ -15,11 +15,13 @@ BUY_ACTIONS = {"buy", "buy_stock"}
 SELL_ACTIONS = {"sell", "sell_stock"}
 
 
-async def _get_or_create_settings(db: AsyncSession) -> PaperSettings:
-    result = await db.execute(select(PaperSettings).limit(1))
+async def _get_or_create_settings(db: AsyncSession, user_id: int) -> PaperSettings:
+    result = await db.execute(
+        select(PaperSettings).where(PaperSettings.user_id == user_id).limit(1)
+    )
     s = result.scalar_one_or_none()
     if not s:
-        s = PaperSettings(initial_balance=10_000.0, reset_at=datetime.utcnow())
+        s = PaperSettings(user_id=user_id, initial_balance=10_000.0, reset_at=datetime.utcnow())
         db.add(s)
         await db.commit()
         await db.refresh(s)
@@ -27,13 +29,16 @@ async def _get_or_create_settings(db: AsyncSession) -> PaperSettings:
 
 
 @router.get("/summary")
-async def paper_summary(db: AsyncSession = Depends(get_db), _=Depends(require_auth)):
-    s = await _get_or_create_settings(db)
+async def paper_summary(
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    s = await _get_or_create_settings(db, current_user.id)
 
-    # All dry-run order trades since the last reset, oldest first
     result = await db.execute(
         select(TradeLog)
         .where(
+            TradeLog.user_id == current_user.id,
             TradeLog.dry_run == True,
             TradeLog.action.in_(BUY_ACTIONS | SELL_ACTIONS),
             TradeLog.quantity.isnot(None),
@@ -44,9 +49,8 @@ async def paper_summary(db: AsyncSession = Depends(get_db), _=Depends(require_au
     )
     trades = result.scalars().all()
 
-    # Replay trades to build virtual portfolio
     cash = s.initial_balance
-    positions: dict[str, dict] = {}  # symbol → {qty, avg_cost, total_cost}
+    positions: dict[str, dict] = {}
     realized_pnl = 0.0
 
     for t in trades:
@@ -78,7 +82,6 @@ async def paper_summary(db: AsyncSession = Depends(get_db), _=Depends(require_au
                     "total_cost": remaining * pos["avg_cost"],
                 }
 
-    # Enrich open positions with latest cached price
     price_cache_result = await db.execute(select(PriceCache))
     price_cache = {r.symbol: r.price for r in price_cache_result.scalars().all()}
 
@@ -126,19 +129,25 @@ class SettingsUpdate(BaseModel):
 
 
 @router.put("/settings")
-async def update_settings(body: SettingsUpdate, db: AsyncSession = Depends(get_db), _=Depends(require_auth)):
+async def update_settings(
+    body: SettingsUpdate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
     if body.initial_balance <= 0:
         raise HTTPException(422, "initial_balance must be positive")
-    s = await _get_or_create_settings(db)
+    s = await _get_or_create_settings(db, current_user.id)
     s.initial_balance = body.initial_balance
     await db.commit()
     return {"initial_balance": s.initial_balance}
 
 
 @router.post("/reset")
-async def reset_portfolio(db: AsyncSession = Depends(get_db), _=Depends(require_auth)):
-    """Start fresh — moves the reset_at timestamp to now without deleting history."""
-    s = await _get_or_create_settings(db)
+async def reset_portfolio(
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    s = await _get_or_create_settings(db, current_user.id)
     s.reset_at = datetime.utcnow()
     await db.commit()
     return {"reset_at": s.reset_at.isoformat(), "message": "Paper portfolio reset. History preserved."}

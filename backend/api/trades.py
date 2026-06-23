@@ -1,9 +1,10 @@
-"""Trade history endpoints."""
+"""Trade history endpoints — scoped to the current user."""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import TradeLog, AgentRun, get_db
+from models.database import TradeLog, AgentRun, User, get_db
+from api.session import require_auth
 
 router = APIRouter()
 
@@ -14,9 +15,14 @@ async def list_trades(
     page_size: int = Query(50, ge=1, le=200),
     strategy: str | None = None,
     dry_run: bool | None = None,
+    current_user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(TradeLog).order_by(desc(TradeLog.timestamp))
+    query = (
+        select(TradeLog)
+        .where(TradeLog.user_id == current_user.id)
+        .order_by(desc(TradeLog.timestamp))
+    )
     if strategy:
         query = query.where(TradeLog.strategy == strategy)
     if dry_run is not None:
@@ -53,8 +59,14 @@ async def list_trades(
 
 
 @router.get("/trades/{trade_id}")
-async def get_trade(trade_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(TradeLog).where(TradeLog.id == trade_id))
+async def get_trade(
+    trade_id: int,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TradeLog).where(TradeLog.id == trade_id, TradeLog.user_id == current_user.id)
+    )
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "Trade not found")
@@ -77,9 +89,14 @@ async def get_trade(trade_id: int, db: AsyncSession = Depends(get_db)):
 async def list_runs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(AgentRun).order_by(desc(AgentRun.started_at))
+    query = (
+        select(AgentRun)
+        .where(AgentRun.user_id == current_user.id)
+        .order_by(desc(AgentRun.started_at))
+    )
     total_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = total_result.scalar_one()
 

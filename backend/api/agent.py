@@ -2,17 +2,19 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from agent.scheduler import start_scheduler, stop_scheduler, trigger_now, scheduler, _current_job_id
+from agent.scheduler import start_scheduler, stop_scheduler, trigger_now, scheduler, _job_id
+from models.database import User
+from api.session import require_auth
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 @router.get("/agent/status")
-async def agent_status():
-    job = scheduler.get_job(_current_job_id)
+async def agent_status(current_user: User = Depends(require_auth)):
+    job = scheduler.get_job(_job_id(current_user.id))
     return {
         "scheduled": job is not None,
         "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
@@ -20,22 +22,22 @@ async def agent_status():
 
 
 @router.post("/agent/start")
-async def start_agent():
+async def start_agent(current_user: User = Depends(require_auth)):
     await start_scheduler()
     return {"message": "Agent scheduler started"}
 
 
 @router.post("/agent/stop")
-async def stop_agent():
-    await stop_scheduler()
+async def stop_agent(current_user: User = Depends(require_auth)):
+    await stop_scheduler(current_user.id)
     return {"message": "Agent scheduler stopped"}
 
 
 @router.post("/agent/run-now")
-async def run_now():
-    """Trigger an immediate agent run outside the schedule."""
+async def run_now(current_user: User = Depends(require_auth)):
+    """Trigger an immediate agent run for the current user."""
     try:
-        asyncio.create_task(trigger_now())
+        asyncio.create_task(trigger_now(current_user.id))
         return {"message": "Agent run triggered"}
     except ValueError as exc:
         raise HTTPException(400, str(exc))

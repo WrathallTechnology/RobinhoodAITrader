@@ -136,12 +136,12 @@ def _determine_side(tool_name: str, args: dict) -> str:
 # ── Agent entrypoint ──────────────────────────────────────────────────────────
 
 async def run_agent(strategy_yaml: str, litellm_model: str, api_key: str,
-                    oauth_token: str, dry_run: bool = True) -> int:
+                    oauth_token: str, dry_run: bool = True, user_id: int | None = None) -> int:
     strategy = yaml.safe_load(strategy_yaml)
     strategy_name = strategy.get("name", "unknown")
 
     async with AsyncSessionLocal() as db:
-        run = AgentRun(strategy=strategy_name, model=litellm_model,
+        run = AgentRun(user_id=user_id, strategy=strategy_name, model=litellm_model,
                        status="running", dry_run=dry_run)
         db.add(run)
         await db.commit()
@@ -152,7 +152,7 @@ async def run_agent(strategy_yaml: str, litellm_model: str, api_key: str,
                      "model": litellm_model, "dry_run": dry_run})
 
     try:
-        await _agent_loop(strategy, litellm_model, api_key, oauth_token, dry_run, run_id, strategy_name)
+        await _agent_loop(strategy, litellm_model, api_key, oauth_token, dry_run, run_id, strategy_name, user_id=user_id)
         status, summary = "done", "Agent cycle completed successfully."
     except Exception as exc:
         logger.exception("Agent run %d failed", run_id)
@@ -172,7 +172,7 @@ async def run_agent(strategy_yaml: str, litellm_model: str, api_key: str,
 
 
 async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str,
-                      dry_run: bool, run_id: int, strategy_name: str) -> None:
+                      dry_run: bool, run_id: int, strategy_name: str, user_id: int | None = None) -> None:
     system = build_system_prompt(strategy, dry_run)
 
     async with robinhood_mcp(oauth_token) as (mcp_session, tools):
@@ -233,7 +233,7 @@ async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str
                 await _log_tool_call(
                     tool_name, args, result_content,
                     run_id, strategy_name, model, dry_run,
-                    price_override=logged_price,
+                    price_override=logged_price, user_id=user_id,
                 )
 
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_content})
@@ -283,7 +283,7 @@ async def _intercept_paper_order(mcp_session, tool_name: str, args: dict) -> tup
 
 async def _log_tool_call(tool_name: str, args: dict, result: str,
                           run_id: int, strategy: str, model: str, dry_run: bool,
-                          price_override: float | None = None) -> None:
+                          price_override: float | None = None, user_id: int | None = None) -> None:
     symbol = args.get("symbol", args.get("ticker", ""))
     quantity = args.get("quantity", args.get("shares", None))
     price = price_override if price_override is not None else args.get("price", args.get("limit_price", None))
@@ -296,6 +296,7 @@ async def _log_tool_call(tool_name: str, args: dict, result: str,
 
     async with AsyncSessionLocal() as db:
         db.add(TradeLog(
+            user_id=user_id,
             symbol=symbol or tool_name,
             action=action,
             quantity=float(quantity) if quantity else None,

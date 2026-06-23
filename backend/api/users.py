@@ -56,6 +56,10 @@ async def create_user(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    from agent.scheduler import seed_builtin_strategies_for_user
+    await seed_builtin_strategies_for_user(user.id)
+
     return {"id": user.id, "username": user.username, "is_admin": user.is_admin}
 
 

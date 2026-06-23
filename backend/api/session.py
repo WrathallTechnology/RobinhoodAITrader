@@ -84,6 +84,10 @@ async def register(body: RegisterRequest, response: Response, db: AsyncSession =
     await db.commit()
     await db.refresh(user)
     logger.info("New user registered: %s", user.username)
+
+    from agent.scheduler import seed_builtin_strategies_for_user
+    await seed_builtin_strategies_for_user(user.id)
+
     return await _create_session(user, response, db)
 
 
