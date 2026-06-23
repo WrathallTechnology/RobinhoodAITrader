@@ -165,8 +165,10 @@ async def _get_or_register_client(metadata: dict, redirect_uri: str) -> dict:
             logger.info("Registering new client at %s with redirect_uri=%s", reg_url, redirect_uri)
             async with httpx.AsyncClient(timeout=15) as http:
                 try:
+                    from urllib.parse import urlparse as _urlparse
+                    _netloc = _urlparse(redirect_uri).netloc
                     resp = await http.post(reg_url, json={
-                        "client_name": "RobinHood AI Trader",
+                        "client_name": f"RobinHood AI Trader ({_netloc})",
                         "redirect_uris": [redirect_uri],
                         "grant_types": ["authorization_code", "refresh_token"],
                         "response_types": ["code"],
