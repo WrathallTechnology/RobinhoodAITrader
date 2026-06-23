@@ -91,11 +91,16 @@ async def _run_scheduled_agent() -> None:
 
 async def reschedule(cron: str) -> None:
     """Update the scheduler job to use a new cron expression."""
+    try:
+        trigger = CronTrigger.from_crontab(cron)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(400, f"Invalid cron expression '{cron}': {exc}") from exc
     if scheduler.get_job(_current_job_id):
         scheduler.remove_job(_current_job_id)
     scheduler.add_job(
         _run_scheduled_agent,
-        CronTrigger.from_crontab(cron),
+        trigger,
         id=_current_job_id,
         replace_existing=True,
         max_instances=1,
