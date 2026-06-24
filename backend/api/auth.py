@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from crypto import encrypt, decrypt
-from models.database import AsyncSessionLocal, OAuthClientReg, OAuthToken, User, get_db
+from models.database import AsyncSessionLocal, OAuthClientReg, OAuthState, OAuthToken, User, get_db
 from api.session import require_auth
 
 router = APIRouter()
@@ -243,15 +243,26 @@ async def robinhood_start(current_user: User = Depends(require_auth)):
         raise HTTPException(502, f"Could not connect to Robinhood OAuth: {exc}")
 
     verifier, challenge = _pkce_pair()
-    state_payload = json.dumps({
-        "user_id": current_user.id,
-        "verifier": verifier,
-        "client_id": reg["client_id"],
-        "token_url": reg["token_url"],
-        "redirect_uri": _LOCALHOST_CALLBACK,
-        "expiry": (datetime.utcnow() + timedelta(minutes=10)).isoformat(),
-    })
-    state = encrypt(state_payload)
+    state_id = secrets.token_urlsafe(32)
+    expiry = datetime.utcnow() + timedelta(minutes=15)
+
+    # Purge stale states then insert the new one
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            select(OAuthState).where(OAuthState.expires_at < datetime.utcnow())
+        )
+        from sqlalchemy import delete as _delete
+        await db.execute(_delete(OAuthState).where(OAuthState.expires_at < datetime.utcnow()))
+        db.add(OAuthState(
+            state_id=state_id,
+            user_id=current_user.id,
+            verifier=verifier,
+            client_id=reg["client_id"],
+            token_url=reg["token_url"],
+            redirect_uri=_LOCALHOST_CALLBACK,
+            expires_at=expiry,
+        ))
+        await db.commit()
 
     scope = " ".join(_resource_scopes) if _resource_scopes else "internal"
     params = {
@@ -259,7 +270,7 @@ async def robinhood_start(current_user: User = Depends(require_auth)):
         "redirect_uri": _LOCALHOST_CALLBACK,
         "response_type": "code",
         "scope": scope,
-        "state": state,
+        "state": state_id,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
@@ -286,17 +297,11 @@ async def robinhood_callback(
     if not code:
         raise HTTPException(400, "Missing authorization code in callback")
 
-    try:
-        entry = json.loads(decrypt(state))
-        expiry = datetime.fromisoformat(entry["expiry"])
-        if datetime.utcnow() > expiry:
-            raise ValueError("expired")
-    except Exception:
+    row = await _pop_state(state, db)
+    if not row:
         raise HTTPException(400, "Invalid or expired OAuth state — please try connecting again")
 
-    user_id: int = entry["user_id"]
-
-    await _exchange_and_store(code, entry, db)
+    await _exchange_and_store(code, row, db)
     return RedirectResponse("/?auth=success")
 
 
@@ -311,52 +316,60 @@ async def robinhood_paste(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Complete the OAuth flow when the automatic localhost callback isn't reachable.
-    The user pastes the full callback URL from their browser's address bar
-    (e.g. http://localhost/auth/robinhood/callback?code=...&state=...).
+    Complete the OAuth flow for remote deployments: user pastes the full localhost
+    callback URL from their browser's address bar after Robinhood login.
     """
     from urllib.parse import urlparse, parse_qs
     parsed = urlparse(body.callback_url)
-    params = parse_qs(parsed.query)
+    qs = parse_qs(parsed.query)
 
-    error = params.get("error", [None])[0]
+    error = qs.get("error", [None])[0]
     if error:
-        desc = params.get("error_description", [""])[0]
+        desc = qs.get("error_description", [""])[0]
         raise HTTPException(400, f"Robinhood returned an error: {error} — {desc}")
 
-    code = params.get("code", [None])[0]
-    state = params.get("state", [None])[0]
+    code = qs.get("code", [None])[0]
+    state = qs.get("state", [None])[0]
     if not code or not state:
-        raise HTTPException(400, "URL is missing 'code' or 'state' — make sure you copied the full URL from your browser's address bar")
+        raise HTTPException(400, "URL is missing 'code' or 'state' — copy the full URL from your browser's address bar")
 
-    try:
-        entry = json.loads(decrypt(state))
-        expiry = datetime.fromisoformat(entry["expiry"])
-        if datetime.utcnow() > expiry:
-            raise ValueError("expired")
-        if entry["user_id"] != current_user.id:
-            raise ValueError("user mismatch")
-    except Exception:
-        raise HTTPException(400, "Invalid or expired OAuth state — start the connection again")
+    row = await _pop_state(state, db)
+    if not row:
+        raise HTTPException(400, "Invalid or expired OAuth state — click Connect Robinhood again to start a fresh flow")
+    if row.user_id != current_user.id:
+        raise HTTPException(403, "This OAuth flow belongs to a different user")
 
-    await _exchange_and_store(code, entry, db)
+    await _exchange_and_store(code, row, db)
     return {"ok": True}
 
 
-async def _exchange_and_store(code: str, entry: dict, db: AsyncSession) -> None:
+async def _pop_state(state_id: str, db: AsyncSession) -> OAuthState | None:
+    """Fetch and delete a one-time OAuth state row; returns None if missing or expired."""
+    from sqlalchemy import delete as _delete
+    result = await db.execute(select(OAuthState).where(OAuthState.state_id == state_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    await db.execute(_delete(OAuthState).where(OAuthState.state_id == state_id))
+    await db.commit()
+    if datetime.utcnow() > row.expires_at:
+        return None
+    return row
+
+
+async def _exchange_and_store(code: str, state: OAuthState, db: AsyncSession) -> None:
     """Exchange auth code for tokens and persist them."""
-    redirect_uri = entry.get("redirect_uri", _LOCALHOST_CALLBACK)
-    user_id: int = entry["user_id"]
+    user_id: int = state.user_id
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            entry["token_url"],
+            state.token_url,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": entry["client_id"],
-                "code_verifier": entry["verifier"],
+                "redirect_uri": state.redirect_uri,
+                "client_id": state.client_id,
+                "code_verifier": state.verifier,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -389,7 +402,7 @@ async def _exchange_and_store(code: str, entry: dict, db: AsyncSession) -> None:
         ))
 
     await db.commit()
-    logger.info("Robinhood OAuth token stored for user_id=%d, expires %s", user_id, expires_at)
+    logger.info("Robinhood token stored user_id=%d expires %s", user_id, expires_at)
 
 
 @router.get("/status")

@@ -54,6 +54,19 @@ class OAuthToken(Base):
     token_type: Mapped[str] = mapped_column(String(32), default="Bearer")
 
 
+class OAuthState(Base):
+    """Short-lived PKCE state stored in DB so server restarts don't break OAuth flows."""
+    __tablename__ = "oauth_state"
+
+    state_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("trader_user.id", ondelete="CASCADE"))
+    verifier: Mapped[str] = mapped_column(Text)
+    client_id: Mapped[str] = mapped_column(String(256))
+    token_url: Mapped[str] = mapped_column(Text)
+    redirect_uri: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
 class StrategyConfig(Base):
     __tablename__ = "strategy_config"
     __table_args__ = (UniqueConstraint("name", "user_id", name="uq_strategy_name_user"),)
