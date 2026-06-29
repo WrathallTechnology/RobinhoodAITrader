@@ -39,13 +39,55 @@ async def run_migrations(conn: AsyncConnection) -> None:
             await conn.execute(text("DROP TABLE strategy_config"))
             await conn.execute(text("ALTER TABLE strategy_config_new RENAME TO strategy_config"))
 
+    # ── oauth_token: recreate with UNIQUE(provider, user_id) ─────────────────
+    result = await conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='oauth_token'"
+    ))
+    if result.scalar_one_or_none():
+        result = await conn.execute(text("PRAGMA table_info(oauth_token)"))
+        cols = {row[1] for row in result.fetchall()}
+        # Check if the old single-column unique index still exists
+        result = await conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='oauth_token' "
+            "AND sql LIKE '%provider%' AND name NOT LIKE '%user_id%'"
+        ))
+        old_unique = result.scalar_one_or_none()
+        if old_unique or "user_id" not in cols:
+            logger.info("Migrating oauth_token → UNIQUE(provider, user_id)")
+            await conn.execute(text("""
+                CREATE TABLE oauth_token_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER REFERENCES trader_user(id) ON DELETE CASCADE,
+                    provider VARCHAR(64) NOT NULL,
+                    access_token TEXT NOT NULL,
+                    refresh_token TEXT,
+                    expires_at DATETIME,
+                    token_type VARCHAR(32) DEFAULT 'Bearer',
+                    UNIQUE(provider, user_id)
+                )
+            """))
+            if "user_id" in cols:
+                await conn.execute(text(
+                    "INSERT INTO oauth_token_new "
+                    "SELECT id, user_id, provider, access_token, refresh_token, expires_at, token_type "
+                    "FROM oauth_token"
+                ))
+            else:
+                first_user = "(SELECT id FROM trader_user ORDER BY id LIMIT 1)"
+                await conn.execute(text(
+                    f"INSERT INTO oauth_token_new "
+                    f"SELECT id, {first_user}, provider, access_token, refresh_token, expires_at, token_type "
+                    f"FROM oauth_token"
+                ))
+            await conn.execute(text("DROP TABLE oauth_token"))
+            await conn.execute(text("ALTER TABLE oauth_token_new RENAME TO oauth_token"))
+
     # ── simple ADD COLUMN migrations for other tables ─────────────────────────
     _add_cols = [
         ("llm_config",    "user_id INTEGER REFERENCES trader_user(id)"),
         ("trade_log",     "user_id INTEGER REFERENCES trader_user(id)"),
         ("agent_run",     "user_id INTEGER REFERENCES trader_user(id)"),
         ("paper_settings","user_id INTEGER REFERENCES trader_user(id)"),
-        ("oauth_token",   "user_id INTEGER REFERENCES trader_user(id)"),
     ]
     for table, col_def in _add_cols:
         tbl = await conn.execute(text(
