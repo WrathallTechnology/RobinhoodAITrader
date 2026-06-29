@@ -4,7 +4,6 @@ Connects to https://agent.robinhood.com/mcp/trading using the MCP Python
 client and yields the session + tools in OpenAI-compatible format so LiteLLM
 can route them to any provider.
 """
-import inspect
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -44,19 +43,12 @@ async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, 
         async with robinhood_mcp(token) as (session, tools):
             result = await session.call_tool("get_portfolio", {})
     """
-    auth_headers = {"Authorization": f"Bearer {oauth_token}"}
-    # The `headers` kwarg was removed in newer mcp releases in favour of
-    # `httpx_client_factory`. Detect which API the installed version supports.
-    _sig = inspect.signature(streamable_http_client)
-    if "headers" in _sig.parameters:
-        _ctx = streamable_http_client(url=ROBINHOOD_MCP_URL, headers=auth_headers)
-    else:
-        _ctx = streamable_http_client(
-            url=ROBINHOOD_MCP_URL,
-            httpx_client_factory=lambda: httpx.AsyncClient(headers=auth_headers, timeout=30),
-        )
+    http_client = httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {oauth_token}"},
+        timeout=30,
+    )
     try:
-        async with _ctx as (read, write):
+        async with streamable_http_client(url=ROBINHOOD_MCP_URL, http_client=http_client) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools_result = await session.list_tools()
