@@ -212,9 +212,23 @@ function PaperPortfolioCard({ data }: { data: PaperSummary }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
+function extractDetail(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  // API errors look like: "502: {"detail":"Failed to fetch..."}"
+  const m = err.message.match(/"detail"\s*:\s*"([^"]+)"/);
+  if (m) return m[1];
+  return err.message;
+}
+
 export default function Dashboard() {
   const { data: auth } = useQuery({ queryKey: ["robinhoodStatus"], queryFn: fetchRobinhoodStatus, refetchInterval: 60_000 });
-  const { data: portfolio } = useQuery({ queryKey: ["portfolio"], queryFn: fetchPortfolio, enabled: !!auth?.authenticated, refetchInterval: 60_000 });
+  const { data: portfolio, error: portfolioError } = useQuery({
+    queryKey: ["portfolio"],
+    queryFn: fetchPortfolio,
+    enabled: !!auth?.authenticated,
+    refetchInterval: 60_000,
+    retry: 1,
+  });
   const { data: trades } = useQuery({ queryKey: ["trades"], queryFn: () => fetchTrades(1, 100) });
   const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: () => fetchRuns(1) });
   const { data: paper } = useQuery({ queryKey: ["paperSummary"], queryFn: fetchPaperSummary, refetchInterval: 30_000 });
@@ -237,6 +251,16 @@ export default function Dashboard() {
           <AlertTriangle size={16} />
           Robinhood is not connected. Go to{" "}
           <a href="/settings" className="underline">Settings</a> to authenticate.
+        </div>
+      )}
+
+      {portfolioError && auth?.authenticated && (
+        <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 flex items-start gap-3 text-red-300 text-sm">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <span className="font-medium">Portfolio unavailable — </span>
+            {extractDetail(portfolioError)}
+          </div>
         </div>
       )}
 
@@ -283,6 +307,26 @@ export default function Dashboard() {
 
       {/* Paper portfolio */}
       {paper && <PaperPortfolioCard data={paper} />}
+
+      {/* Last failed run error */}
+      {(() => {
+        const lastFailed = (runs?.items ?? []).find((r: AgentRun) => r.status === "error");
+        if (!lastFailed) return null;
+        return (
+          <div className="bg-red-900/20 border border-red-800 rounded-xl p-4 flex items-start gap-3 text-red-300 text-sm">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <div>
+              <span className="font-medium">Last agent run failed</span>
+              <span className="text-gray-500 ml-2 text-xs">
+                {new Date(lastFailed.started_at).toLocaleString()}
+              </span>
+              {lastFailed.summary && (
+                <div className="mt-1 text-red-400/80">{lastFailed.summary}</div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Agent runs chart */}
       {chartData.length > 1 && (

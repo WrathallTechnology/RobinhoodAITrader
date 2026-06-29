@@ -102,7 +102,13 @@ async def _run_scheduled_agent(user_id: int) -> None:
         logger.info("user_id=%d: no active strategy — skipping scheduled run", user_id)
         return
 
-    llm = await _get_active_llm(user_id)
+    try:
+        llm = await _get_active_llm(user_id)
+    except Exception as exc:
+        logger.warning("user_id=%d: LLM config error (%s: %s) — skipping run",
+                       user_id, type(exc).__name__, exc)
+        return
+
     if llm is None:
         logger.warning("user_id=%d: no active LLM — skipping run", user_id)
         return
