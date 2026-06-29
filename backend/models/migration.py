@@ -41,18 +41,20 @@ async def run_migrations(conn: AsyncConnection) -> None:
 
     # ── oauth_token: recreate with UNIQUE(provider, user_id) ─────────────────
     result = await conn.execute(text(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='oauth_token'"
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='oauth_token'"
     ))
-    if result.scalar_one_or_none():
+    table_sql = result.scalar_one_or_none() or ""
+    if table_sql:
         result = await conn.execute(text("PRAGMA table_info(oauth_token)"))
         cols = {row[1] for row in result.fetchall()}
-        # Check if the old single-column unique index still exists
-        result = await conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='oauth_token' "
-            "AND sql LIKE '%provider%' AND name NOT LIKE '%user_id%'"
-        ))
-        old_unique = result.scalar_one_or_none()
-        if old_unique or "user_id" not in cols:
+        # The new schema has UNIQUE(provider, user_id) in the CREATE TABLE sql.
+        # SQLite stores implicit column-level UNIQUE constraints with sql=NULL
+        # in sqlite_master (autoindexes), so we check the table DDL directly.
+        has_composite = (
+            "provider, user_id" in table_sql.lower()
+            or "provider,user_id" in table_sql.lower()
+        )
+        if not has_composite or "user_id" not in cols:
             logger.info("Migrating oauth_token → UNIQUE(provider, user_id)")
             await conn.execute(text("""
                 CREATE TABLE oauth_token_new (
