@@ -1,9 +1,4 @@
-"""Robinhood MCP connection helper.
-
-Connects to https://agent.robinhood.com/mcp/trading using the MCP Python
-client and yields the session + tools in OpenAI-compatible format so LiteLLM
-can route them to any provider.
-"""
+"""Robinhood MCP connection helper."""
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -18,7 +13,6 @@ ROBINHOOD_MCP_URL = "https://agent.robinhood.com/mcp/trading"
 
 
 def _mcp_tool_to_openai(tool) -> dict:
-    """Convert an MCP Tool object to the OpenAI function-calling schema."""
     schema = tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}}
     return {
         "type": "function",
@@ -30,18 +24,24 @@ def _mcp_tool_to_openai(tool) -> dict:
     }
 
 
+def _is_cleanup_noise(exc: BaseException) -> bool:
+    """Return True for expected MCP teardown errors that aren't real failures."""
+    msg = str(exc).lower()
+    return (
+        "session termination" in msg
+        or "terminate" in msg
+        or (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (400, 404))
+    )
+
+
 @asynccontextmanager
 async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, list[dict]]]:
     """
-    Async context manager that opens a connection to the Robinhood MCP server.
+    Async context manager for the Robinhood MCP server.
 
-    Yields:
-        (session, tools) where tools is a list of OpenAI-format tool dicts.
-
-    Usage::
-
-        async with robinhood_mcp(token) as (session, tools):
-            result = await session.call_tool("get_portfolio", {})
+    Yields (session, tools) where tools is a list of OpenAI-format tool dicts.
+    Suppresses session-termination cleanup errors (400/404 on DELETE) that the
+    mcp library wraps in an asyncio TaskGroup ExceptionGroup.
     """
     http_client = httpx.AsyncClient(
         headers={"Authorization": f"Bearer {oauth_token}"},
@@ -55,6 +55,23 @@ async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, 
                 tools = [_mcp_tool_to_openai(t) for t in tools_result.tools]
                 logger.info("Connected to Robinhood MCP — %d tools available", len(tools))
                 yield session, tools
-    except Exception as exc:
-        logger.error("Robinhood MCP connection failed: %s", exc)
-        raise
+    except BaseException as exc:
+        # asyncio.TaskGroup wraps sub-exceptions in an ExceptionGroup.
+        # The mcp library uses TaskGroup internally, so a 400 on session DELETE
+        # becomes ExceptionGroup("unhandled errors in a TaskGroup", [...]).
+        # Unwrap it: if every sub-exception is cleanup noise, suppress the whole
+        # thing; otherwise re-raise only the real errors.
+        sub = getattr(exc, "exceptions", None)
+        if sub is not None:
+            real = [e for e in sub if not _is_cleanup_noise(e)]
+            if real:
+                # Raise the first real error (not the ExceptionGroup wrapper)
+                logger.error("Robinhood MCP failed: %s", real[0])
+                raise real[0] from exc
+            else:
+                logger.debug("Suppressed MCP teardown ExceptionGroup: %s", exc)
+        else:
+            logger.error("Robinhood MCP connection failed: %s", exc)
+            raise
+    finally:
+        await http_client.aclose()
