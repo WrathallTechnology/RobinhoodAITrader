@@ -24,29 +24,25 @@ def _mcp_tool_to_openai(tool) -> dict:
     }
 
 
-def _is_cleanup_noise(exc: BaseException) -> bool:
-    """Return True for expected MCP teardown errors that aren't real failures."""
-    msg = str(exc).lower()
-    return (
-        "session termination" in msg
-        or "terminate" in msg
-        or (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (400, 404))
-    )
-
-
 @asynccontextmanager
 async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, list[dict]]]:
     """
     Async context manager for the Robinhood MCP server.
 
     Yields (session, tools) where tools is a list of OpenAI-format tool dicts.
-    Suppresses session-termination cleanup errors (400/404 on DELETE) that the
-    mcp library wraps in an asyncio TaskGroup ExceptionGroup.
+
+    The mcp library runs a background SSE GET stream inside an asyncio.TaskGroup.
+    Robinhood frequently drops and re-establishes that stream, and returns 400 on
+    session DELETE. When those background-task errors coincide with the context
+    exiting they get wrapped in an ExceptionGroup that would otherwise mask a
+    successful tool call result. We track whether user code raised and suppress
+    ExceptionGroups that come purely from background/cleanup tasks.
     """
     http_client = httpx.AsyncClient(
         headers={"Authorization": f"Bearer {oauth_token}"},
         timeout=30,
     )
+    user_code_raised = False
     try:
         async with streamable_http_client(url=ROBINHOOD_MCP_URL, http_client=http_client) as (read, write, _):
             async with ClientSession(read, write) as session:
@@ -54,22 +50,23 @@ async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, 
                 tools_result = await session.list_tools()
                 tools = [_mcp_tool_to_openai(t) for t in tools_result.tools]
                 logger.info("Connected to Robinhood MCP — %d tools available", len(tools))
-                yield session, tools
+                try:
+                    yield session, tools
+                except BaseException:
+                    # Record that the exception came from our caller, not from cleanup.
+                    user_code_raised = True
+                    raise
     except BaseException as exc:
-        # asyncio.TaskGroup wraps sub-exceptions in an ExceptionGroup.
-        # The mcp library uses TaskGroup internally, so a 400 on session DELETE
-        # becomes ExceptionGroup("unhandled errors in a TaskGroup", [...]).
-        # Unwrap it: if every sub-exception is cleanup noise, suppress the whole
-        # thing; otherwise re-raise only the real errors.
-        sub = getattr(exc, "exceptions", None)
+        sub = getattr(exc, "exceptions", None)  # ExceptionGroup has .exceptions
         if sub is not None:
-            real = [e for e in sub if not _is_cleanup_noise(e)]
-            if real:
-                # Raise the first real error (not the ExceptionGroup wrapper)
-                logger.error("Robinhood MCP failed: %s", real[0])
-                raise real[0] from exc
+            if user_code_raised:
+                # Both user code and background tasks raised — let it propagate.
+                logger.error("Robinhood MCP failed: %s", exc)
+                raise
             else:
-                logger.debug("Suppressed MCP teardown ExceptionGroup: %s", exc)
+                # Only background/cleanup tasks raised (e.g. 400 on session DELETE,
+                # dropped SSE stream). User code succeeded; suppress the noise.
+                logger.debug("Suppressed MCP background ExceptionGroup on exit: %s", exc)
         else:
             logger.error("Robinhood MCP connection failed: %s", exc)
             raise
