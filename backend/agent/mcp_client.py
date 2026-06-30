@@ -10,6 +10,17 @@ from mcp.client.streamable_http import streamable_http_client
 
 logger = logging.getLogger(__name__)
 
+
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    """Recursively flatten ExceptionGroup nesting to leaf exceptions."""
+    sub = getattr(exc, "exceptions", None)
+    if sub is None:
+        return [exc]
+    leaves: list[BaseException] = []
+    for e in sub:
+        leaves.extend(_leaf_exceptions(e))
+    return leaves
+
 ROBINHOOD_MCP_URL = "https://agent.robinhood.com/mcp/trading"
 
 
@@ -76,12 +87,22 @@ async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, 
     except BaseException as exc:
         sub = getattr(exc, "exceptions", None)  # ExceptionGroup has .exceptions
         if sub is not None:
-            # Log every sub-exception so we can see the real cause.
-            for i, e in enumerate(sub):
-                logger.error("MCP sub-exception[%d]: %s: %s", i, type(e).__name__, e)
+            # The mcp library nests ExceptionGroups (ClientSession TaskGroup inside
+            # streamable_http_client TaskGroup).  Unwrap to leaf exceptions so we
+            # can see the actual error type and HTTP status.
+            leaves = _leaf_exceptions(exc)
+            for i, e in enumerate(leaves):
+                detail = ""
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    try:
+                        detail = f" — HTTP {resp.status_code}: {resp.text[:300]}"
+                    except Exception:
+                        detail = f" — HTTP {resp.status_code}"
+                logger.error("MCP leaf[%d]: %s: %s%s", i, type(e).__name__, e, detail)
             if user_code_raised:
-                # Raise the first meaningful error, not the ExceptionGroup wrapper.
-                raise sub[0] from exc
+                # Raise the first real leaf error, not the ExceptionGroup wrapper.
+                raise (leaves[0] if leaves else sub[0]) from exc
             else:
                 # Only background/cleanup tasks raised; user code succeeded.
                 logger.debug("Suppressed MCP background ExceptionGroup: %s", exc)
