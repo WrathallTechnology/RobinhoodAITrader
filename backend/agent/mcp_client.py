@@ -75,7 +75,7 @@ async def robinhood_mcp(oauth_token: str) -> AsyncIterator[tuple[ClientSession, 
                     fn = t["function"]
                     params = list(fn.get("parameters", {}).get("properties", {}).keys())
                     req = fn.get("parameters", {}).get("required", [])
-                    logger.info("  MCP tool: %s  params=%s  required=%s", fn["name"], params, req)
+                    logger.debug("  MCP tool: %s  params=%s  required=%s", fn["name"], params, req)
 
                 # The Robinhood MCP server drops the SSE GET stream ~100ms after
                 # connection and the mcp library reconnects after a 1000ms back-off.

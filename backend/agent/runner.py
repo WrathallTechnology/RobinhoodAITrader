@@ -18,11 +18,14 @@ from api.ws import broadcast
 
 logger = logging.getLogger(__name__)
 
-# Tool names that place real orders — blocked in dry-run mode
-ORDER_TOOLS = {"place_order", "buy_stock", "sell_stock", "place_market_order", "place_limit_order"}
-
-# MCP tool names that might return a quote price (tried in order)
-QUOTE_TOOLS = ("get_quote", "get_quotes", "get_stock_quote", "get_market_data", "get_price")
+# Tool names that modify account state — intercepted in dry-run mode.
+# Robinhood MCP tool names confirmed from get_accounts + list_tools (2026-06-30).
+ORDER_TOOLS = {
+    "place_equity_order",
+    "place_option_order",
+    "cancel_equity_order",
+    "cancel_option_order",
+}
 
 MAX_ITERATIONS = 25
 
@@ -46,9 +49,10 @@ def build_system_prompt(strategy: dict, dry_run: bool) -> str:
         safety += """
 ## DRY RUN MODE — ACTIVE
 You are running in paper trading (simulation) mode.
-Call order-placement tools (buy_stock, sell_stock, etc.) exactly as you would for real trades.
-The system will intercept them, record them at the live market price, and track your virtual P&L.
-You may also call read-only tools (get_portfolio, get_quote, get_news, etc.) as normal.
+Call order-placement tools (place_equity_order, place_option_order) exactly as you would for real
+trades — the system intercepts them, records them at the live market price, and tracks virtual P&L.
+You may call all read-only tools (get_accounts, get_portfolio, get_equity_quotes, etc.) as normal.
+Do NOT call review_equity_order before place_equity_order in paper mode; go straight to placing.
 """
     return base.strip() + "\n\n" + safety.strip()
 
@@ -94,17 +98,16 @@ def _parse_price(text: str) -> float | None:
 
 
 async def _fetch_live_price(mcp_session, symbol: str) -> float | None:
-    """Try each known quote tool name until one returns a parseable price."""
-    for tool_name in QUOTE_TOOLS:
-        try:
-            result = await mcp_session.call_tool(tool_name, {"symbol": symbol})
-            text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
-            price = _parse_price(text)
-            if price:
-                logger.debug("Got live price for %s: %.2f via %s", symbol, price, tool_name)
-                return price
-        except Exception:
-            continue
+    """Fetch a live quote price via get_equity_quotes."""
+    try:
+        result = await mcp_session.call_tool("get_equity_quotes", {"symbols": [symbol]})
+        text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+        price = _parse_price(text)
+        if price:
+            logger.debug("Got live price for %s: %.2f", symbol, price)
+            return price
+    except Exception:
+        pass
     return None
 
 
@@ -248,15 +251,25 @@ async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str
 
 async def _intercept_paper_order(mcp_session, tool_name: str, args: dict) -> tuple[str, float | None]:
     """
-    Handle a dry-run order: fetch live market price via MCP quote tools,
-    build a descriptive result string, return (result_content, price).
+    Handle a dry-run order interception.  Returns (result_content, price).
+
+    Supports place_equity_order (quantity or dollar_amount) and cancel orders.
     """
+    # Cancel operations don't have a real order to cancel in paper mode.
+    if "cancel" in tool_name:
+        msg = "[PAPER TRADE] Cancel skipped — no real order exists in paper mode."
+        logger.info("Paper trade: cancel skipped")
+        return msg, None
+
     symbol = args.get("symbol", args.get("ticker", ""))
     side = _determine_side(tool_name, args)
-    quantity = args.get("quantity", args.get("shares", args.get("amount")))
 
-    # Use limit price from args if present, otherwise fetch live quote
-    price = args.get("price") or args.get("limit_price")
+    # Quantity may be specified directly or as a dollar_amount
+    quantity = args.get("quantity", args.get("shares"))
+    dollar_amount = args.get("dollar_amount")
+
+    # Resolve price: limit_price → stop_price → live quote
+    price = args.get("limit_price") or args.get("stop_price") or args.get("price")
     if price:
         try:
             price = float(price)
@@ -268,8 +281,17 @@ async def _intercept_paper_order(mcp_session, tool_name: str, args: dict) -> tup
         if price:
             await _cache_price(symbol, price)
 
+    # If dollar_amount given instead of quantity, derive quantity from price
+    if quantity is None and dollar_amount and price:
+        try:
+            quantity = float(dollar_amount) / price
+        except (TypeError, ZeroDivisionError):
+            pass
+
     price_str = f"${price:,.2f}" if price else "price unknown"
-    qty_str = f"{quantity} shares" if quantity else "unspecified quantity"
+    qty_str = f"{quantity:.4f} shares".rstrip("0").rstrip(".") + " shares" if quantity else "unspecified quantity"
+    if dollar_amount and not args.get("quantity"):
+        qty_str = f"${float(dollar_amount):,.2f} worth"
     value_str = f"${price * float(quantity):,.2f}" if price and quantity else ""
 
     result = (
