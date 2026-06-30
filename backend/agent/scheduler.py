@@ -180,7 +180,11 @@ async def trigger_now(user_id: int) -> int:
     if strategy is None:
         raise ValueError("No active strategy configured")
 
-    llm = await _get_active_llm(user_id)
+    try:
+        llm = await _get_active_llm(user_id)
+    except Exception as exc:
+        raise ValueError(f"LLM config error ({type(exc).__name__}: {exc}) — re-enter your API key in Settings") from exc
+
     if llm is None:
         raise ValueError("No active LLM configured — add one in Settings")
 
