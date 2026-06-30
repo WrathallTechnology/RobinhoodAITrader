@@ -28,14 +28,17 @@ async def get_portfolio(
             account_number: str | None = None
             try:
                 acct_data = json.loads(acct_raw)
-                items = acct_data if isinstance(acct_data, list) else [acct_data]
-                for item in items:
+                # Response shape: {"data": {"accounts": [{"account_number": "...", ...}]}}
+                # Also try flat list or single dict as fallback.
+                candidates = (
+                    acct_data.get("data", {}).get("accounts", [])
+                    if isinstance(acct_data, dict) else []
+                )
+                if not candidates:
+                    candidates = acct_data if isinstance(acct_data, list) else [acct_data]
+                for item in candidates:
                     if isinstance(item, dict):
-                        account_number = (
-                            item.get("account_number")
-                            or item.get("accountNumber")
-                            or item.get("id")
-                        )
+                        account_number = item.get("account_number") or item.get("accountNumber")
                         if account_number:
                             break
             except (json.JSONDecodeError, Exception):
