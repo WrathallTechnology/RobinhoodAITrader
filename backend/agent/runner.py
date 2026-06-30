@@ -205,6 +205,9 @@ async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str
             if choice.finish_reason == "stop" or not msg.tool_calls:
                 break
 
+            # The LLM's text alongside its tool calls contains the trade rationale.
+            llm_rationale = (msg.content or "").strip()
+
             for tc in msg.tool_calls:
                 tool_name = tc.function.name
                 try:
@@ -237,6 +240,7 @@ async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str
                     tool_name, args, result_content,
                     run_id, strategy_name, model, dry_run,
                     price_override=logged_price, user_id=user_id,
+                    llm_rationale=llm_rationale if is_order else None,
                 )
 
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_content})
@@ -305,7 +309,8 @@ async def _intercept_paper_order(mcp_session, tool_name: str, args: dict) -> tup
 
 async def _log_tool_call(tool_name: str, args: dict, result: str,
                           run_id: int, strategy: str, model: str, dry_run: bool,
-                          price_override: float | None = None, user_id: int | None = None) -> None:
+                          price_override: float | None = None, user_id: int | None = None,
+                          llm_rationale: str | None = None) -> None:
     symbol = args.get("symbol", args.get("ticker", ""))
     quantity = args.get("quantity", args.get("shares", None))
     price = price_override if price_override is not None else args.get("price", args.get("limit_price", None))
@@ -316,6 +321,12 @@ async def _log_tool_call(tool_name: str, args: dict, result: str,
     else:
         action = tool_name
 
+    # For order tools, store the AI's rationale; for read-only calls store the raw result.
+    if llm_rationale:
+        reasoning = llm_rationale[:4000]
+    else:
+        reasoning = result[:4000]
+
     async with AsyncSessionLocal() as db:
         db.add(TradeLog(
             user_id=user_id,
@@ -323,7 +334,7 @@ async def _log_tool_call(tool_name: str, args: dict, result: str,
             action=action,
             quantity=float(quantity) if quantity else None,
             price=float(price) if price else None,
-            reasoning=result[:4000],
+            reasoning=reasoning,
             strategy=strategy,
             model=model,
             dry_run=dry_run,

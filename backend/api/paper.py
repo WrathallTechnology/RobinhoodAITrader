@@ -11,8 +11,8 @@ from api.session import require_auth
 
 router = APIRouter()
 
-BUY_ACTIONS = {"buy", "buy_stock"}
-SELL_ACTIONS = {"sell", "sell_stock"}
+BUY_ACTIONS = {"buy"}
+SELL_ACTIONS = {"sell"}
 
 
 async def _get_or_create_settings(db: AsyncSession, user_id: int) -> PaperSettings:
