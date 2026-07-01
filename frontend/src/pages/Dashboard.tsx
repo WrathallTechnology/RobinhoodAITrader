@@ -19,6 +19,7 @@ import {
   FlaskConical, RotateCcw, Settings2,
 } from "lucide-react";
 import clsx from "clsx";
+import { formatET, formatETDate, formatETTime } from "../utils/formatDate";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
@@ -159,7 +160,7 @@ function PaperPortfolioCard({ data }: { data: PaperSummary }) {
               {fmt(data.unrealized_pnl)}
             </span>
           </span>
-          <span>{data.trade_count} paper trades since {new Date(data.reset_at).toLocaleDateString()}</span>
+          <span>{data.trade_count} paper trades since {formatETDate(data.reset_at)}</span>
         </div>
       )}
 
@@ -236,7 +237,7 @@ export default function Dashboard() {
   const chartData = (runs?.items ?? [])
     .slice().reverse().slice(-20)
     .map((r: AgentRun) => ({
-      time: new Date(r.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      time: formatETTime(r.started_at),
       status: r.status === "done" ? 1 : 0,
     }));
 
@@ -318,7 +319,7 @@ export default function Dashboard() {
             <div>
               <span className="font-medium">Last agent run failed</span>
               <span className="text-gray-500 ml-2 text-xs">
-                {new Date(lastFailed.started_at).toLocaleString()}
+                {formatET(lastFailed.started_at)}
               </span>
               {lastFailed.summary && (
                 <div className="mt-1 text-red-400/80">{lastFailed.summary}</div>
@@ -363,7 +364,7 @@ export default function Dashboard() {
                   {t.quantity && <span className="text-gray-400">{t.quantity} shares</span>}
                   {t.price && <span className="text-gray-500">@ {fmt(t.price)}</span>}
                 </div>
-                <div className="text-gray-500 text-xs">{new Date(t.timestamp).toLocaleString()}</div>
+                <div className="text-gray-500 text-xs">{formatET(t.timestamp)}</div>
               </div>
             ))}
           </div>

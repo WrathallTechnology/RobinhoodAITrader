@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAgentStatus, fetchMe, runNow, stopAgent, startAgent } from "../api/client";
 import { Play, Square, Zap } from "lucide-react";
 import clsx from "clsx";
+import { formatETTime } from "../utils/formatDate";
 
 interface LiveEvent {
   type: string;
@@ -69,7 +70,7 @@ export default function AgentStatus() {
   const statusLabel = running
     ? "Running…"
     : data?.scheduled
-    ? `Next: ${data.next_run ? new Date(data.next_run).toLocaleTimeString() : "scheduled"}`
+    ? `Next: ${data.next_run ? formatETTime(data.next_run) : "scheduled"}`
     : "Idle";
 
   return (

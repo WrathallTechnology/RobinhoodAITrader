@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchTrades, fetchRuns, type Trade, type AgentRun } from "../api/client";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import clsx from "clsx";
+import { formatET } from "../utils/formatDate";
 
 function TradeRow({ trade }: { trade: Trade }) {
   const [open, setOpen] = useState(false);
@@ -13,7 +14,7 @@ function TradeRow({ trade }: { trade: Trade }) {
         className="border-b border-gray-800/50 hover:bg-gray-800/20 cursor-pointer"
         onClick={() => trade.reasoning && setOpen((p) => !p)}
       >
-        <td className="px-5 py-3 text-gray-500 text-xs">{new Date(trade.timestamp).toLocaleString()}</td>
+        <td className="px-5 py-3 text-gray-500 text-xs">{formatET(trade.timestamp)}</td>
         <td className="px-5 py-3 font-mono text-white font-medium">{trade.symbol}</td>
         <td className="px-5 py-3">
           <span className={clsx("px-2 py-0.5 rounded text-xs font-medium", trade.dry_run ? "bg-gray-700 text-gray-400" : trade.action === "buy" || trade.action === "buy_stock" ? "bg-brand/20 text-brand" : trade.action === "sell" || trade.action === "sell_stock" ? "bg-red-500/20 text-red-400" : "bg-blue-500/20 text-blue-400")}>
@@ -46,7 +47,7 @@ function RunRow({ run }: { run: AgentRun }) {
         className="border-b border-gray-800/50 hover:bg-gray-800/20 cursor-pointer"
         onClick={() => run.summary && setOpen((p) => !p)}
       >
-        <td className="px-5 py-3 text-gray-500 text-xs">{new Date(run.started_at).toLocaleString()}</td>
+        <td className="px-5 py-3 text-gray-500 text-xs">{formatET(run.started_at)}</td>
         <td className="px-5 py-3 text-gray-300 text-sm truncate max-w-xs">{run.strategy}</td>
         <td className="px-5 py-3 text-gray-500 text-xs truncate max-w-xs">{run.model}</td>
         <td className="px-5 py-3">
