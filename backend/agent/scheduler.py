@@ -1,6 +1,8 @@
 """APScheduler setup — per-user jobs, each running on the user's active strategy + LLM."""
 import logging
+from datetime import datetime, date, time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -14,6 +16,47 @@ from crypto import decrypt
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="UTC")
+
+_ET = ZoneInfo("America/New_York")
+_MARKET_OPEN = dtime(9, 30)
+_MARKET_CLOSE = dtime(16, 0)
+
+# NYSE observed holidays — extend this set each year as needed.
+_NYSE_HOLIDAYS: set[date] = {
+    # 2026
+    date(2026, 1, 1),   # New Year's Day
+    date(2026, 1, 19),  # MLK Day
+    date(2026, 2, 16),  # Presidents' Day
+    date(2026, 4, 3),   # Good Friday
+    date(2026, 5, 25),  # Memorial Day
+    date(2026, 6, 19),  # Juneteenth
+    date(2026, 7, 3),   # Independence Day (observed)
+    date(2026, 9, 7),   # Labor Day
+    date(2026, 11, 26), # Thanksgiving
+    date(2026, 12, 25), # Christmas
+    # 2027
+    date(2027, 1, 1),   # New Year's Day
+    date(2027, 1, 18),  # MLK Day
+    date(2027, 2, 15),  # Presidents' Day
+    date(2027, 3, 26),  # Good Friday
+    date(2027, 5, 31),  # Memorial Day
+    date(2027, 6, 18),  # Juneteenth (observed)
+    date(2027, 7, 5),   # Independence Day (observed)
+    date(2027, 9, 6),   # Labor Day
+    date(2027, 11, 25), # Thanksgiving
+    date(2027, 12, 24), # Christmas (observed)
+}
+
+
+def _is_market_open() -> bool:
+    """Return True if NYSE is currently in regular trading hours (9:30–16:00 ET, weekdays)."""
+    now_et = datetime.now(_ET)
+    if now_et.weekday() >= 5:  # Saturday or Sunday
+        return False
+    if now_et.date() in _NYSE_HOLIDAYS:
+        return False
+    t = now_et.time().replace(tzinfo=None)
+    return _MARKET_OPEN <= t < _MARKET_CLOSE
 
 BUILTIN_STRATEGY_FILES = [
     "momentum.yaml",
@@ -96,6 +139,10 @@ async def _get_active_llm(user_id: int) -> tuple[str, str] | None:
 async def _run_scheduled_agent(user_id: int) -> None:
     from api.auth import get_robinhood_token
     from agent.runner import run_agent
+
+    if not _is_market_open():
+        logger.debug("user_id=%d: market closed — skipping scheduled run", user_id)
+        return
 
     strategy = await _get_active_strategy(user_id)
     if strategy is None:
