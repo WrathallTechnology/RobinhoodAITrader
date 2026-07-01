@@ -21,19 +21,10 @@ async def get_portfolio(
 ):
     token = await get_robinhood_token(db, current_user.id)
     try:
-        async with robinhood_mcp(token) as (session, tools):
-            # Log which tools have required params — helps diagnose account_number issues.
-            tool_reqs = {t["function"]["name"]: t["function"].get("parameters", {}).get("required", []) for t in tools}
-            no_req_account = [n for n, r in tool_reqs.items() if not r and "account" in n.lower()]
-            logger.info("MCP tools with required params: %s", {k: v for k, v in tool_reqs.items() if v})
-            logger.info("Account-related tools with no required params: %s", no_req_account)
-
+        async with robinhood_mcp(token) as (session, _tools):
             # get_portfolio requires account_number — fetch it from get_accounts first
-            logger.info("Calling get_accounts — required params: %s", tool_reqs.get("get_accounts", []))
             acct_result = await session.call_tool("get_accounts", {})
             acct_raw = "\n".join(c.text for c in acct_result.content if hasattr(c, "text"))
-            logger.info("get_accounts response: %s", acct_raw[:400])
-            logger.info("get_accounts raw response: %s", acct_raw[:500])
             account_number: str | None = None
             try:
                 acct_data = json.loads(acct_raw)
