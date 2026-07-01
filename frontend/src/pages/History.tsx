@@ -16,9 +16,16 @@ function TradeRow({ trade }: { trade: Trade }) {
       >
         <td className="px-5 py-3 text-gray-500 text-xs">{formatET(trade.timestamp)}</td>
         <td className="px-5 py-3 font-mono text-white font-medium">{trade.symbol}</td>
-        <td className="px-5 py-3">
-          <span className={clsx("px-2 py-0.5 rounded text-xs font-medium", trade.dry_run ? "bg-gray-700 text-gray-400" : trade.action === "buy" || trade.action === "buy_stock" ? "bg-brand/20 text-brand" : trade.action === "sell" || trade.action === "sell_stock" ? "bg-red-500/20 text-red-400" : "bg-blue-500/20 text-blue-400")}>
-            {trade.dry_run ? "DRY" : ""} {trade.action.toUpperCase()}
+        <td className="px-5 py-3 flex items-center gap-1.5 flex-wrap">
+          {trade.dry_run && (
+            <span className="px-1.5 py-0.5 rounded text-xs bg-gray-700 text-gray-400">PAPER</span>
+          )}
+          <span className={clsx("px-2 py-0.5 rounded text-xs font-medium",
+            trade.action === "buy" ? "bg-brand/20 text-brand"
+            : trade.action === "sell" ? "bg-red-500/20 text-red-400"
+            : "bg-blue-500/20 text-blue-400"
+          )}>
+            {trade.action.toUpperCase()}
           </span>
         </td>
         <td className="px-5 py-3 text-right text-gray-300 text-sm">{trade.quantity ?? "—"}</td>
@@ -30,8 +37,9 @@ function TradeRow({ trade }: { trade: Trade }) {
       </tr>
       {open && trade.reasoning && (
         <tr className="bg-gray-950">
-          <td colSpan={7} className="px-5 py-3">
-            <pre className="text-xs text-gray-400 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">{trade.reasoning}</pre>
+          <td colSpan={7} className="px-5 py-4">
+            <div className="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">AI Rationale</div>
+            <p className="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">{trade.reasoning}</p>
           </td>
         </tr>
       )}

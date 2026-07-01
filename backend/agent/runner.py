@@ -174,11 +174,37 @@ async def run_agent(strategy_yaml: str, litellm_model: str, api_key: str,
     return run_id
 
 
+async def _fetch_account_number(mcp_session) -> str | None:
+    """Return the default account_number from get_accounts, or None on failure."""
+    try:
+        result = await mcp_session.call_tool("get_accounts", {})
+        raw = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+        data = json.loads(raw)
+        accounts = data.get("data", {}).get("accounts", []) if isinstance(data, dict) else []
+        if not accounts:
+            accounts = data if isinstance(data, list) else [data]
+        for acct in accounts:
+            if isinstance(acct, dict):
+                num = acct.get("account_number") or acct.get("accountNumber")
+                if num:
+                    return str(num)
+    except Exception as exc:
+        logger.warning("Could not fetch account_number: %s", exc)
+    return None
+
+
 async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str,
                       dry_run: bool, run_id: int, strategy_name: str, user_id: int | None = None) -> None:
-    system = build_system_prompt(strategy, dry_run)
-
     async with robinhood_mcp(oauth_token) as (mcp_session, tools):
+        # Pre-fetch account_number so the agent always knows it upfront.
+        account_number = await _fetch_account_number(mcp_session)
+        acct_note = (
+            f"\n\n## Your Account\nYour Robinhood account_number is **{account_number}**. "
+            "Use it as-is for all tool calls that require account_number."
+            if account_number else ""
+        )
+        system = build_system_prompt(strategy, dry_run) + acct_note
+
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": "Analyze current market conditions and execute your trading strategy now."},
@@ -236,12 +262,14 @@ async def _agent_loop(strategy: dict, model: str, api_key: str, oauth_token: str
                             await _cache_price(symbol, extracted)
                             logged_price = extracted
 
-                await _log_tool_call(
-                    tool_name, args, result_content,
-                    run_id, strategy_name, model, dry_run,
-                    price_override=logged_price, user_id=user_id,
-                    llm_rationale=llm_rationale if is_order else None,
-                )
+                # Only persist order tool calls — read-only calls are too verbose for trade history.
+                if is_order:
+                    await _log_tool_call(
+                        tool_name, args, result_content,
+                        run_id, strategy_name, model, dry_run,
+                        price_override=logged_price, user_id=user_id,
+                        llm_rationale=llm_rationale,
+                    )
 
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_content})
 
